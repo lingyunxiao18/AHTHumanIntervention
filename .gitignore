@@ -146,9 +146,9 @@ src/GARBAGE
 backups/
 bc/
 
-# ingore files
-models/
+# ignore files
 baseline_models/
+models/
 
 wandb/
 experiments/ 
