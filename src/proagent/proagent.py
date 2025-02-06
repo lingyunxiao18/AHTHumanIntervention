@@ -107,6 +107,13 @@ class ProMediumLevelAgent(ProAgent):
 
 		self.layout_prompt = self.generate_layout_prompt()
 
+		# Initialize the GPT Module for human intervention
+        
+		self.human_gpt_module = Module(
+            role_messages=[{"role": "system", "content": "Translate human instructions into valid Overcooked actions."}],
+            model=self.model
+        )
+
 
 	def set_mdp(self, mdp):
 		self.mdp = mdp
@@ -395,6 +402,18 @@ class ProMediumLevelAgent(ProAgent):
 			self.time_to_wait = 1
 			chosen_action = Action.STAY
 		self.current_ml_action_steps += 1
+
+		if self.should_trigger_human_intervention(state):
+			# Get human instruction as text input
+			human_instruction = self.get_human_instruction(state)
+
+			# Use GPT to translate human input into an Overcooked action
+			translated_action = self.translate_human_instruction_to_action(human_instruction)
+
+			print(f"[Human Intervention] Instruction: {human_instruction} -> Translated Action: {translated_action}")
+
+			return translated_action  # Execute the GPT-translated action
+
 
 		# print(f'ml_action = {self.current_ml_action}') 
 		# print(f'P{self.agent_index} : {Action.to_char(chosen_action)}')
@@ -813,6 +832,92 @@ class ProMediumLevelAgent(ProAgent):
 		action_plan, plan_cost = find_path(start_pos_and_or, other_pos_and_or, goal, terrain_matrix) 
 
 		return action_plan, plan_cost
+
+	##################
+	'''
+	The followings are the Human Intervention part
+	'''
+	##################
+
+	def should_trigger_human_intervention(self, state):
+		"""
+		Determines whether the agent is struggling and requires human intervention.
+		"""
+		# Condition 1: No rewards for a long time
+		if state.timestep > 50 and self.current_ml_action_steps > 10:
+			print("Intervention Triggered: No rewards received for a long time.")
+			return True
+
+		# Condition 2: Stuck in the same location (no movement)
+		if self.prev_state and state.players[self.agent_index].position == self.prev_state.players[self.agent_index].position:
+			print("Intervention Triggered: Agent is stuck.")
+			return True
+
+		# Condition 3: Conflicting movements with teammate
+		if state.players[self.agent_index].position == state.players[1 - self.agent_index].position:
+			print("Intervention Triggered: Collision detected.")
+			return True
+
+		return False
+	
+	def get_human_instruction(self, state):
+		"""
+		Pause the game and asks the human for intervention input.
+		"""
+		print("Human Intervention Required! Describe what the agent should do:")
+		return input("Your instruction: ")
+
+	def translate_human_instruction_to_action(self, human_instruction):
+		"""
+		Uses GPT to translate natural language instructions into valid Overcooked actions.
+		"""
+
+		# Define a structured prompt with examples
+		prompt = f"""
+				You are assisting in an Overcooked AI simulation where human instructions must be converted into valid game actions.
+				Translate the following human instruction into one of these Overcooked actions: 
+				["NORTH", "SOUTH", "EAST", "WEST", "INTERACT", "STAY"].
+
+				### Examples:
+				- "Move up" → NORTH
+				- "Go south" → SOUTH
+				- "Step to the right" → EAST
+				- "Walk left" → WEST
+				- "Pick up the onion" → INTERACT
+				- "Put the tomato in the pot" → INTERACT
+				- "Stay in place" → STAY
+				- "Wait" → STAY
+
+				### Instruction:
+				{human_instruction}
+
+				### Expected output format:
+				Just return the action in uppercase, nothing else (e.g., "NORTH").
+				"""
+
+		# Query GPT using the human intervention module
+		self.human_gpt_module.current_user_message = {"role": "user", "content": prompt}
+		translated_action = self.human_gpt_module.query(self.openai_api_key())
+
+		# Ensure the output is a valid action
+		return self.parse_action_from_llm_response(translated_action)
+
+
+	def parse_action_from_llm_response(self, response):
+		"""
+		Parses the LLM response to ensure it is a valid Overcooked action.
+		"""
+		valid_actions = {"NORTH", "SOUTH", "EAST", "WEST", "INTERACT", "STAY"}
+
+		response = response.strip().upper()  
+		if response in valid_actions:
+			return response
+
+		print(f"[WARNING] GPT returned an invalid action: {response}. Defaulting to STAY.")
+		return "STAY"  # Default if the response is invalid
+
+
+
 	
 class ProPlanningAgent(ProAgent):
 	def __init__(self, model="gpt-3.5-turbo"):
