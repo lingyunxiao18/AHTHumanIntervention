@@ -3,7 +3,6 @@ README.md
 setup.py
 zsceval/__init__.py
 zsceval/config.py
-zsceval/grf_config.py
 zsceval/overcooked_config.py
 zsceval.egg-info/PKG-INFO
 zsceval.egg-info/SOURCES.txt

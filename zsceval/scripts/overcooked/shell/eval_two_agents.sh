@@ -6,47 +6,60 @@ if [ "$#" -ne 3 ]; then
     exit 1
 fi
 
+# Set basic parameters.
+env="Overcooked"
 layout=$1
 agent0_policy_name=$2
 agent1_policy_name=$3
+num_agents=2
+algo="population"
 
-# Determine which version of Overcooked to use based on the layout
-if [[ "${layout}" == "random0" || "${layout}" == "random0_medium" || \
-      "${layout}" == "random1" || "${layout}" == "random3" || \
-      "${layout}" == "small_corridor" || "${layout}" == "unident_s" ]]; then
+# Determine the version of Overcooked based on layout.
+if [[ "${layout}" == "random0" || "${layout}" == "random0_medium" || "${layout}" == "random1" || "${layout}" == "random3" || "${layout}" == "small_corridor" || "${layout}" == "unident_s" ]]; then
     version="old"
 else
     version="new"
 fi
 
-env="Overcooked"
-num_agents=2
-algo="population"  # using the same evaluation framework
+# Set POLICY_POOL relative to this script's location.
+export POLICY_POOL="$(cd "$(dirname "$0")/../.." && pwd)/policy_pool"
+echo "POLICY_POOL is set to: $POLICY_POOL"
 
-# Create a temporary population YAML file for our two policies.
-yaml_dir="eval/eval_policy_pool/${layout}/two_agents"
-mkdir -p ${yaml_dir}
-population_yaml="${yaml_dir}/two_agents.yml"
+# Define directories for the output YAML and results.
+yml_dir="$(cd "$(dirname "$0")/../../eval/eval_policy_pool/${layout}/results" && pwd)"
+mkdir -p "${yml_dir}"
 
-cat > ${population_yaml} <<EOF
-# Minimal population file for two agents
-agent0: ${agent0_policy_name}
-agent1: ${agent1_policy_name}
+# Create a minimal population YAML file for the two agents.
+# Adjust the inner paths (configs/ and models/) as appropriate for your repository.
+population_yaml="${yml_dir}/two_agents.yml"
+cat > "${population_yaml}" <<EOF
+agent0:
+  policy_config_path: "configs/${agent0_policy_name}_config.pkl"
+  model_path: "models/${agent0_policy_name}_model.pt"
+  featurize_type: "ppo"
+  train: false
+agent1:
+  policy_config_path: "configs/${agent1_policy_name}_config.pkl"
+  model_path: "models/${agent1_policy_name}_model.pt"
+  featurize_type: "ppo"
+  train: false
 EOF
 
-# Define directories for results and run
-run_dir="$HOME/ZSC/results/${env}/${layout}/${algo}/eval_two_agents"
-mkdir -p ${run_dir}
-eval_result_path="eval/results/${layout}/${algo}/eval_two_agents.json"
+echo "Generated population YAML at: ${population_yaml}"
 
-# Set evaluation parameters
+# Set evaluation parameters.
 episode_length=400
 n_eval_rollout_threads=20
 eval_episodes=40
 dummy_batch_size=2
 
-# Execute the evaluation using the Python evaluation script
-python eval.py \
+# Set run directory and evaluation result path.
+run_dir="$(cd "$(dirname "$0")/../../ZSC/results/${env}/${layout}/${algo}" && pwd)/eval_two_agents"
+mkdir -p "${run_dir}"
+eval_result_path="eval/results/${layout}/${algo}/eval_two_agents.json"
+
+# Launch the evaluation. Here we use eval.py (adjust the path if needed).
+python "$(cd "$(dirname "$0")/../../eval" && pwd)/eval.py" \
   --env_name ${env} \
   --algorithm_name ${algo} \
   --experiment_name "eval_two_agents" \
@@ -60,8 +73,8 @@ python eval.py \
   --dummy_batch_size ${dummy_batch_size} \
   --use_proper_time_limits \
   --use_wandb \
-  --population_yaml_path ${population_yaml} \
+  --population_yaml_path "${population_yaml}" \
   --overcooked_version ${version} \
-  --eval_result_path ${eval_result_path} \
+  --eval_result_path "${eval_result_path}" \
   --agent0_policy_name ${agent0_policy_name} \
   --agent1_policy_name ${agent1_policy_name}
