@@ -22,8 +22,3 @@ rich
 numpy==1.22
 numba
 pre-commit
-# human exp
-flask
-markdown
-flask_cors
--e .
