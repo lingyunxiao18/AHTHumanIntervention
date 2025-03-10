@@ -62,8 +62,8 @@ This repository follows the framework of ZSC-Eval (https://github.com/sjtu-marl/
 
    For example, if your layout is `random0` and the pre-trained model files are organized as follows:
 
-   Ego agent (Cole): `policy_pool/random0/cole/s2/cole-S2-s25/1.pt`
-   Partner agent (FCP): `policy_pool/random0/fcp/s2/fcp-S2-s12/1.pt`
+   - **Ego agent (Cole):** `policy_pool/random0/cole/s2/cole-S2-s25/1.pt`
+   - **Partner agent (FCP):** `policy_pool/random0/fcp/s2/fcp-S2-s12/1.pt`
 
    You would run:
    ```bash
