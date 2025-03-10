@@ -50,8 +50,7 @@ class OvercookedRunner(Runner):
 
     def check_for_pause_trigger(self):
         """
-        (Legacy) Checks for pause trigger by prompting the user.
-        This method is still available if you want to trigger intervention explicitly.
+        Checks for pause trigger by prompting the user.
         """
         user_input = input("Press Enter to continue or type 'p' to pause: ").strip().lower()
         return user_input == "p"
@@ -66,7 +65,7 @@ class OvercookedRunner(Runner):
         """
         if not openai.api_key:
             logger.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
-            return -1  # Return noop if API key is missing
+            return -1  # Stay if API key is missing
 
         try:
             response = openai.ChatCompletion.create(
@@ -90,8 +89,7 @@ class OvercookedRunner(Runner):
 
     def apply_human_action(self, agent_id, action):
         """
-        Sets the human override action for the specified agent.
-        In our implementation, only the EGO agent (player 0) is overridden.
+        For now, the human overrides action directly for the specified agent.
         """
         if agent_id == 0:
             self.human_override_action = action

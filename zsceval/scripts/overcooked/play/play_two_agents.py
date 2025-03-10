@@ -94,7 +94,7 @@ def main(args):
     config = {
         "all_args": all_args,
         "envs": play_envs,
-        "eval_envs": play_envs,  # In play mode, we use the same env for continuous play.
+        "eval_envs": play_envs,  
         "num_agents": all_args.num_agents,
         "device": device,
         "run_dir": run_dir,
@@ -111,7 +111,6 @@ def main(args):
     runner.trainer[1].policy.actor.load_state_dict(state_dict1)
 
     logger.info("Starting play loop. You can intervene in real time during play.")
-    # Run the main loop (using run() so that our per-step human intervention is active).
     runner.run()
 
     # Optionally, save play results.
