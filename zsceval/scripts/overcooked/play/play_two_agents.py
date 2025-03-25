@@ -1,40 +1,36 @@
 #!/usr/bin/env python
-"""
-Play script for testing real-time human intervention when two independent Overcooked agents are playing.
-This script loads two agent checkpoints, sets up the environment, and runs the game loop.
-Press "p" (or type "p" in real time) to pause and intervene with text commands.
-"""
 import os
-import sys
 import socket
+import sys
 from pathlib import Path
 
+import setproctitle
 import torch
 import wandb
-import setproctitle
 from loguru import logger
 
 from zsceval.config import get_config
-from zsceval.overcooked_config import get_overcooked_args
 from zsceval.envs.env_wrappers import ShareSubprocDummyBatchVecEnv
 from zsceval.envs.overcooked.Overcooked_Env import Overcooked
 from zsceval.envs.overcooked_new.Overcooked_Env import Overcooked as Overcooked_new
+from zsceval.overcooked_config import get_overcooked_args
 from zsceval.utils.train_util import setup_seed
 
-def make_play_env(all_args, run_dir):
-    # Create playing environments.
+
+def make_eval_env(all_args, run_dir):
     def get_env_fn(rank):
         def init_env():
             if all_args.env_name == "Overcooked":
-                # Use the appropriate version based on configuration.
                 if all_args.overcooked_version == "old":
-                    env = Overcooked(all_args, run_dir, rank=rank, evaluation=False)
+                    env = Overcooked(all_args, run_dir, rank=rank, evaluation=True)
                 else:
                     env = Overcooked_new(all_args, run_dir, rank=rank)
             else:
-                raise NotImplementedError(f"Environment {all_args.env_name} not supported.")
+                print("Can not support the " + all_args.env_name + "environment.")
+                raise NotImplementedError
             env.seed(all_args.seed * 50000 + rank * 10000)
             return env
+
         return init_env
 
     return ShareSubprocDummyBatchVecEnv(
@@ -42,94 +38,203 @@ def make_play_env(all_args, run_dir):
         all_args.dummy_batch_size,
     )
 
+
 def parse_args(args, parser):
-    # Add only the essential arguments for playing.
     parser = get_overcooked_args(parser)
+    parser.add_argument(
+        "--use_phi",
+        default=False,
+        action="store_true",
+        help="While existing other agent like planning or human model, use an index to fix the main RL-policy agent.",
+    )
+    parser.add_argument("--store_traj", default=False, action="store_true")
+    # population
+    parser.add_argument(
+        "--population_yaml_path",
+        type=str,
+        help="Path to yaml file that stores the population info.",
+    )
 
     # overcooked evaluation
-    parser.add_argument("--agent0_policy_name", type=str, required=True,
-                        help="Checkpoint (.pt file) for agent 0 (ego agent).")
-    parser.add_argument("--agent1_policy_name", type=str, required=True,
-                        help="Checkpoint (.pt file) for agent 1.")
-    parser.add_argument("--play_result_path", type=str, required=False,
-                        help="File path to optionally save play results.", default="play_results.json")
+    parser.add_argument("--agent0_policy_name", type=str, help="policy name of agent 0")
+    parser.add_argument("--agent1_policy_name", type=str, help="policy name of agent 1")
+    parser.add_argument(
+        "--population_size",
+        type=int,
+        default=2,
+        help="Population size involved in training.",
+    )
+
+    # result
+    parser.add_argument(
+        "--eval_result_path",
+        type=str,
+        help="eval/results/{layout}/{exp}",
+        required=True,
+    )
+
+    # all_args = parser.parse_known_args(args)[0]
     all_args = parser.parse_args(args)
+
     from zsceval.overcooked_config import OLD_LAYOUTS
-    all_args.old_dynamics = all_args.layout_name in OLD_LAYOUTS
+
+    if all_args.layout_name in OLD_LAYOUTS:
+        all_args.old_dynamics = True
+    else:
+        all_args.old_dynamics = False
+
     return all_args
+
 
 def main(args):
     parser = get_config()
     all_args = parse_args(args, parser)
 
-    # # For independent agents, share_policy should be False.
-    # if all_args.share_policy:
-    #     logger.error("share_policy must be False for independent agents.")
-    #     sys.exit(1)
+    assert all_args.algorithm_name == "population"
 
-    # Setup device.
-    device = torch.device("cuda:0") if (all_args.cuda and torch.cuda.is_available()) else torch.device("cpu")
-    torch.set_num_threads(all_args.n_training_threads)
-    if all_args.cuda and torch.cuda.is_available() and all_args.cuda_deterministic:
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
+    # cuda
+    if all_args.cuda and torch.cuda.is_available():
+        print("choose to use gpu...")
+        device = torch.device("cuda:0")
+        torch.set_num_threads(all_args.n_training_threads)
+        if all_args.cuda_deterministic:
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
+    else:
+        print("choose to use cpu...")
+        device = torch.device("cpu")
+        torch.set_num_threads(all_args.n_training_threads)
 
-    # Setup run directory.
-    run_dir = Path(os.path.expanduser("~")) / "ZSC" / "results" / all_args.env_name / all_args.layout_name / all_args.algorithm_name / all_args.experiment_name
-    run_dir.mkdir(parents=True, exist_ok=True)
+    # run dir
+    run_dir = (
+        Path(os.path.expanduser("~") + "/ZSC/results")
+        / all_args.env_name
+        / all_args.layout_name
+        / all_args.algorithm_name
+        / all_args.experiment_name
+    )
+    if not run_dir.exists():
+        os.makedirs(str(run_dir))
     all_args.run_dir = run_dir
 
-    # Initialize wandb if enabled.
-    if all_args.use_wandb:
-        run = wandb.init(config=all_args, project=all_args.env_name, entity=all_args.wandb_name,
-                         notes=socket.gethostname(),
-                         name=f"{all_args.algorithm_name}_{all_args.experiment_name}_seed{all_args.seed}",
-                         group=all_args.layout_name, dir=str(run_dir),
-                         job_type="play", reinit=True)
+    eval_result_dir = Path(os.path.dirname(all_args.eval_result_path))
 
-    setproctitle.setproctitle(f"{all_args.algorithm_name}-{all_args.env_name}_{all_args.layout_name}-{all_args.experiment_name}@{all_args.user_name}")
+    if not eval_result_dir.exists():
+        os.makedirs(str(eval_result_dir))
+
+    # wandb
+    if all_args.use_wandb:
+        run = wandb.init(
+            config=all_args,
+            project=all_args.env_name,
+            entity=all_args.wandb_name,
+            notes=socket.gethostname(),
+            name=str(all_args.algorithm_name) + "_" + str(all_args.experiment_name) + "_seed" + str(all_args.seed),
+            group=all_args.layout_name,
+            dir=str(run_dir),
+            job_type="training",
+            reinit=True,
+        )
+    else:
+        if not run_dir.exists():
+            curr_run = "run1"
+        else:
+            exst_run_nums = [
+                int(str(folder.name).split("run")[1])
+                for folder in run_dir.iterdir()
+                if str(folder.name).startswith("run")
+            ]
+            if len(exst_run_nums) == 0:
+                curr_run = "run1"
+            else:
+                curr_run = "run%i" % (max(exst_run_nums) + 1)
+        run_dir = run_dir / curr_run
+        if not run_dir.exists():
+            os.makedirs(str(run_dir))
+
+    setproctitle.setproctitle(
+        str(all_args.algorithm_name)
+        + "-"
+        + str(all_args.env_name)
+        + "_"
+        + str(all_args.layout_name)
+        + "-"
+        + str(all_args.experiment_name)
+        + "@"
+        + str(all_args.user_name)
+    )
+
+    # seed
+    # torch.manual_seed(all_args.seed)
+    # torch.cuda.manual_seed_all(all_args.seed)
+    # np.random.seed(all_args.seed)
     setup_seed(all_args.seed)
 
-    # Create playing environments.
-    play_envs = make_play_env(all_args, run_dir)
+    # env init
+    envs = make_eval_env(all_args, run_dir)
+    eval_envs = make_eval_env(all_args, run_dir)
+    num_agents = all_args.num_agents
 
     config = {
         "all_args": all_args,
-        "envs": play_envs,
-        "eval_envs": play_envs,  
-        "num_agents": all_args.num_agents,
+        "envs": envs,
+        "eval_envs": eval_envs,
+        "num_agents": num_agents,
         "device": device,
         "run_dir": run_dir,
     }
 
-    # Use the intervention-enabled runner.
-    from zsceval.runner.separated.overcooked_runner_intervention import OvercookedRunner as Runner
+    # run experiments
+    if all_args.share_policy:
+        from zsceval.runner.shared.overcooked_runner import OvercookedRunner as Runner
+    else:
+        from zsceval.runner.separated.overcooked_runner import (
+            OvercookedRunner as Runner,
+        )
+
     runner = Runner(config)
 
-    # Load checkpoints into independent trainers.
-    state_dict0 = torch.load(all_args.agent0_model, map_location=device)
-    state_dict1 = torch.load(all_args.agent1_model, map_location=device)
-    runner.trainer[0].policy.actor.load_state_dict(state_dict0)
-    runner.trainer[1].policy.actor.load_state_dict(state_dict1)
+    # load population
+    logger.info(f"population_yaml_path: {all_args.population_yaml_path}")
+    featurize_type = runner.policy.load_population(all_args.population_yaml_path, evaluation=True)
 
-    logger.info("Starting play loop. You can intervene in real time during play.")
-    runner.run()
+    # configure mapping from (env_id, agent_id) to policy_name
+    # set featurize_type of eval threaded env
+    agent0_featurize_type = featurize_type.get(all_args.agent0_policy_name, "ppo")
+    agent1_featurize_type = featurize_type.get(all_args.agent1_policy_name, "ppo")
 
-    # Optionally, save play results.
-    if all_args.play_result_path:
-        with open(all_args.play_result_path, "w", encoding="utf-8") as f:
-            import json
-            json.dump({"result": "play session complete"}, f, indent=4)
-        logger.info(f"Play results saved to {all_args.play_result_path}")
+    featurize_types = []
 
-    play_envs.close()
+    map_ea2p = dict()
+    for e in range(all_args.n_eval_rollout_threads // 2):
+        map_ea2p[(e, 0)] = all_args.agent0_policy_name
+        map_ea2p[(e, 1)] = all_args.agent1_policy_name
+        featurize_types.append((agent0_featurize_type, agent1_featurize_type))
+    for e in range(all_args.n_eval_rollout_threads // 2, all_args.n_eval_rollout_threads):
+        map_ea2p[(e, 1)] = all_args.agent0_policy_name
+        map_ea2p[(e, 0)] = all_args.agent1_policy_name
+        featurize_types.append((agent1_featurize_type, agent0_featurize_type))
+    runner.policy.set_map_ea2p(map_ea2p)
+    runner.population_size = all_args.population_size
+
+    eval_envs.reset_featurize_type(featurize_types)
+    runner.evaluate_with_multi_policy()
+
+    if envs is not None:
+        # post process
+        envs.close()
+    if eval_envs is not None:
+        # post process
+        eval_envs.close()
+
     if all_args.use_wandb:
         run.finish()
+    else:
+        runner.writter.export_scalars_to_json(str(runner.log_dir + "/summary.json"))
+        runner.writter.close()
 
 
 if __name__ == "__main__":
-    import sys
-    from loguru import logger
     logger.remove()
     logger.add(sys.stdout, level="DEBUG")
     main(sys.argv[1:])

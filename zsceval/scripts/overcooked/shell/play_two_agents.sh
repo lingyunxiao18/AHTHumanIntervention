@@ -108,7 +108,7 @@ agent1:
   featurize_type: ppo
   train: false
 EOF
-            python eval/eval.py --env_name ${env} --algorithm_name ${algo} --experiment_name "${eval_exp}" --layout_name "${layout}" \
+            python play/play_two_agents.py --env_name ${env} --algorithm_name ${algo} --experiment_name "${eval_exp}" --layout_name "${layout}" \
             --num_agents ${num_agents} --seed ${seed} --episode_length 400 --n_eval_rollout_threads 20 --eval_episodes 40 --eval_stochastic --dummy_batch_size 2 \
             --use_proper_time_limits --use_wandb --population_yaml_path "${yml}" --population_size ${population_size} \
             --overcooked_version ${version} --eval_result_path "eval/results/${layout}/${algo}/${eval_exp}.json" \
