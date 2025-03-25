@@ -57,17 +57,14 @@ This repository follows the framework of ZSC-Eval (https://github.com/sjtu-marl/
 
    The shell script `play_two_agents.sh` wraps the play session. To launch a session, run:
    ```bash
-   bash play_two_agents.sh <layout> <agent0_relative_path> <agent1_relative_path>
+   bash shell/play_two_agents.sh <layout> <agent0> <agent1>
    ```
 
-   For example, if your layout is `random0` and the pre-trained model files are organized as follows:
+   Please modify the `.sh` file to adjust the specific pair of policies to play.
 
-   - **Ego agent (Cole):** `policy_pool/random0/cole/s2/cole-S2-s25/1.pt`
-   - **Partner agent (FCP):** `policy_pool/random0/fcp/s2/fcp-S2-s12/1.pt`
-
-   You would run:
+   For example, if your layout is `random0`, you would run:
    ```bash
-   bash play_two_agents.sh random0 policy_pool/random0/cole/s2/cole-S2-s25/1.pt policy_pool/random0/fcp/s2/fcp-S2-s12/1.pt
+   bash shell/play_two_agents.sh random0 fcp mep
    ```
 
 ## Real-Time Intervention

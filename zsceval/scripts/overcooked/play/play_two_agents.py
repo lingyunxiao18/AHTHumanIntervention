@@ -45,9 +45,11 @@ def make_play_env(all_args, run_dir):
 def parse_args(args, parser):
     # Add only the essential arguments for playing.
     parser = get_overcooked_args(parser)
-    parser.add_argument("--agent0_model", type=str, required=True,
+
+    # overcooked evaluation
+    parser.add_argument("--agent0_policy_name", type=str, required=True,
                         help="Checkpoint (.pt file) for agent 0 (ego agent).")
-    parser.add_argument("--agent1_model", type=str, required=True,
+    parser.add_argument("--agent1_policy_name", type=str, required=True,
                         help="Checkpoint (.pt file) for agent 1.")
     parser.add_argument("--play_result_path", type=str, required=False,
                         help="File path to optionally save play results.", default="play_results.json")
@@ -60,10 +62,10 @@ def main(args):
     parser = get_config()
     all_args = parse_args(args, parser)
 
-    # For independent agents, share_policy should be False.
-    if all_args.share_policy:
-        logger.error("share_policy must be False for independent agents.")
-        sys.exit(1)
+    # # For independent agents, share_policy should be False.
+    # if all_args.share_policy:
+    #     logger.error("share_policy must be False for independent agents.")
+    #     sys.exit(1)
 
     # Setup device.
     device = torch.device("cuda:0") if (all_args.cuda and torch.cuda.is_available()) else torch.device("cpu")
