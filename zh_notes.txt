@@ -1,0 +1,38 @@
+- key questions to ask
+-
+- How to load one of the checkpoint to a policy Agent (which might not be implemented yet)
+-
+- How to load one of the checkpoint agent to play with a policy agent
+-
+- How to load one of the checkpoint agent to play with human agent (should be there somewhere in the codebase might be related to human study)
+
+
+Immediate todos
+
+Identify in the repo where the code 
+
+
+there remains some frontend work to be done (for local run, chrome is not a big fan of loading local files, it might be easier to use a server)
+export POLICY_POOL="zsceval/policy_pool"; python zsceval/human_exp/overcooked-flask/app.py
+
+
+good, heres the agent class
+
+
+
+
+
+Notes for loading and playing with zsceval policies
+
+1. Use the zsceval repo as ref. to install dependencies from yaml
+2. Use the zsceval repo as ref. to download policy_pool from huggingface
+3. Identify the two files similar to the followings:
+        POPULATION_YAML_PATH = "/home/zhihan/Documents/Code/ZSC-Eval/zsceval/human_exp/configs/benchmark_configs/random1_benchmark.yml"
+        POLICY_POOL_PATH = "/home/zhihan/Documents/Code/ZSC-Eval/zsceval/policy_pool"
+4. Replace corresponding lines in play_loaded_policy.py
+5. You can change which policy to load by changing the policy name in play_loaded_policy.py
+6. Discuss with Zhiha if anything is not clear / working, this might be easier than trying to figure out the code
+
+TODO: dentify it the the trained policies in zsceval are used in old overcooked envs or the new ones
+TODO: Make sure that the trained policies are performant
+*TODO: Load Heuristic / Handcrafted policies

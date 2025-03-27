@@ -22,6 +22,15 @@ from zsceval.envs.overcooked_new.src.overcooked_ai_py.utils import (
     mean_and_std_err,
 )
 
+
+from zsceval.envs.overcooked.overcooked_ai_py.visualization.state_visualizer import (
+    StateVisualizer,
+)
+
+import gymnasium
+from zsceval.envs.overcooked_new.src.overcooked_ai_py.mdp.actions import Action
+
+
 DEFAULT_ENV_PARAMS = {"horizon": 400}
 
 MAX_HORIZON = 1e10
@@ -584,6 +593,138 @@ class OvercookedEnv:
                 else:
                     stuck_matrix[traj_idx].append(False)
         return stuck_matrix
+    
+    
+from pettingzoo.utils.env import ParallelEnv
+
+# from zsceval.envs.overcooked_new.src.overcooked_ai_py.agents.agent import AgentPair
+from zsceval.envs.overcooked.overcooked_ai_py.agents.agent import AgentPair
+
+class OvercookedEnvPettingZoo(ParallelEnv):
+    def __init__(self, base_env, agents):
+        """
+        base_env: OvercookedEnv
+        agents: AgentPair
+
+        Example creating a PettingZoo env from a base_env:
+
+        mdp = OvercookedGridworld.from_layout_name("asymmetric_advantages")
+        base_env = OvercookedEnv.from_mdp(mdp, horizon=500)
+        agent_pair = load_agent_pair("path/to/checkpoint", "ppo", "ppo")
+        env = OvercookedEnvPettingZoo(base_env, agent_pair)
+
+        """
+        # we need agent-dependent observation space, and the best way to do it is just to include an agentPair
+        assert isinstance(
+            agents, AgentPair
+        ), "agents must be an AgentPair object"
+
+        self.agents = ["agent_0", "agent_1"]
+        self.possible_agents = ["agent_0", "agent_1"]
+        self.agent_map = {"agent_0": agents.a0, "agent_1": agents.a1}
+        self.base_env = base_env
+        self.observation_spaces = {
+            agent: self.observation_space(agent) for agent in self.agents
+        }
+        self.action_spaces = {
+            agent: gymnasium.spaces.Discrete(len(Action.ALL_ACTIONS))
+            for agent in self.agents
+        }
+        # this is the AgentPair object
+        self.reset()
+        self.state_visualizer = StateVisualizer(grid=base_env.mdp.terrain_mtx)
+        self.screen = None
+        
+
+    import functools
+
+    # we want to return the same space object every time
+    @functools.lru_cache(maxsize=2)
+    def observation_space(self, agent):
+        # the observation can be different for each agent
+        agent = self.agent_map[agent]
+        dummy_mdp = self.base_env.mdp
+        dummy_state = dummy_mdp.get_standard_start_state()
+        obs_shape = agent.featurize(dummy_state)[0].shape
+        high = np.ones(obs_shape) * float("inf")
+        low = np.zeros(obs_shape)
+        return gymnasium.spaces.Box(low, high, dtype=np.float32)
+
+    # we want to return the same space object every time
+    @functools.lru_cache(maxsize=1)
+    def action_space(self, agent):
+        # the action space is the same for each agent
+        return gymnasium.spaces.Discrete(len(Action.ALL_ACTIONS))
+
+    def step(self, joint_action):
+        joint_action = [
+            Action.ALL_ACTIONS[joint_action[agent]] for agent in joint_action
+        ]
+        obs, reward, done, info = self.base_env.step(joint_action)
+        # https://gymnasium.farama.org/content/basic_usage/
+        # we have no early termination condition in this env, and the environment only terminates when the time horizon is reached
+        # therefore the terminated is always False, and we set truncated to done
+        terminated = False
+        truncated = done
+
+        def create_dict(value):
+            """
+            Each agent should have the same reward, terminated, truncated, info
+            """
+            return {agent: value for agent in self.agents}
+
+        def create_obs_dict(obs):
+            """
+            Observation is potentially different for each agent
+            """
+            return {
+                agent: self.agent_map[agent].featurize(obs)[idx]
+                for idx, agent in enumerate(self.agents)
+            }
+
+        obs = create_obs_dict(obs)
+        reward = create_dict(reward)
+        terminated = create_dict(terminated)
+        truncated = create_dict(truncated)
+        info = create_dict(info)
+        if done:
+            self.agents = []
+        return obs, reward, terminated, truncated, info
+
+    def reset(self, seed=None, options=None):
+        """
+        Reset the embedded OvercookedEnv envrionment to the starting state
+        """
+        self.base_env.reset()
+        dummy_mdp = self.base_env.mdp
+        dummy_state = dummy_mdp.get_standard_start_state()
+        # when an environment terminates/truncates, PettingZoo wants all agents removed, so during reset we re-add them
+        self.agents = self.possible_agents[:]
+        # return the obsevations as dict
+        obs_dict = {
+            agent: self.agent_map[agent].featurize(dummy_state)[0]
+            for agent in self.agents
+        }
+        return obs_dict, None
+
+    def render(self, mode="human", close=False):
+        if 'pygame' not in globals():
+            import pygame
+            pygame.init()
+        
+        if mode == "human":
+            surface = self.state_visualizer.render_state(self.base_env.state,grid=None)
+            if self.screen is None:
+                self.screen = pygame.display.set_mode(surface.get_size())
+            # If screen exists but size changed, recreate it
+            elif self.screen.get_size() != surface.get_size():
+                self.screen = pygame.display.set_mode(surface.get_size())
+            
+            self.screen.blit(surface, (0, 0))  # (0, 0) is the position to draw the surface
+            pygame.display.flip()  # or pygame.display.update()
+        else:
+            raise NotImplementedError("Only human rendering is supported")
+
 
 
 class Overcooked(gym.Env):
