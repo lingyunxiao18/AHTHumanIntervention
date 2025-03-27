@@ -65,6 +65,9 @@ def parse_args(args, parser):
         help="Population size involved in training.",
     )
 
+    # use human intervention
+    parser.add_argument("--use_intervention", default=False, help="introduce human intervention")
+
     # result
     parser.add_argument(
         "--eval_result_path",
@@ -187,10 +190,10 @@ def main(args):
     # run experiments
     if all_args.share_policy:
         from zsceval.runner.shared.overcooked_runner import OvercookedRunner as Runner
+    if all_args.use_intervention:
+        from zsceval.runner.intervention.overcooked_runner_intervention import OvercookedRunner as Runner
     else:
-        from zsceval.runner.separated.overcooked_runner import (
-            OvercookedRunner as Runner,
-        )
+        from zsceval.runner.separated.overcooked_runner import OvercookedRunner as Runner
 
     runner = Runner(config)
 

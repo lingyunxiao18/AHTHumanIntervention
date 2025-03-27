@@ -30,7 +30,7 @@ elif [[ $2 == "cole" ]]; then
     algorithm_0="cole"
     exps_0=("cole-S2-s50" "cole-S2-s75")
 else
-    echo "Usage: bash $0 {layout} {algo0} {algo1}"
+    echo "Usage: bash $0 {layout} {algo0} {algo1} {use_intervention}"
     exit 0
 fi
 
@@ -51,12 +51,15 @@ elif [[ $3 == "cole" ]]; then
     algorithm_1="cole"
     exps_1=("cole-S2-s50" "cole-S2-s75")
 else
-    echo "Usage: bash $0 {layout} {algo0} {algo1}"
+    echo "Usage: bash $0 {layout} {algo0} {algo1} {use_intervention}"
     exit 0
 fi
 
 # For two-agent evaluation we need one checkpoint per agent.
 population_size=2
+
+# Choose whether to use human intervention
+use_intervention=$4
 
 # (If necessary, you can adjust these numbers for other layouts.)
 declare -A LAYOUTS_KS
@@ -112,7 +115,7 @@ EOF
             --num_agents ${num_agents} --seed ${seed} --episode_length 400 --n_eval_rollout_threads 20 --eval_episodes 40 --eval_stochastic --dummy_batch_size 2 \
             --use_proper_time_limits --use_wandb --population_yaml_path "${yml}" --population_size ${population_size} \
             --overcooked_version ${version} --eval_result_path "eval/results/${layout}/${algo}/${eval_exp}.json" \
-            --agent0_policy_name "agent0" --agent1_policy_name "agent1"
+            --agent0_policy_name "${algo1}" --agent1_policy_name "${algo2}" --use_intervention ${use_intervention}
         done
     done
 done

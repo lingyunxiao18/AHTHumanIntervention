@@ -10,7 +10,7 @@ import wandb
 from icecream import ic
 from loguru import logger
 
-from zsceval.runner.separated.base_runner import Runner
+from zsceval.runner.intervention.base_runner import Runner
 from zsceval.utils.log_util import eta
 
 # Import openai for LLM integration.
