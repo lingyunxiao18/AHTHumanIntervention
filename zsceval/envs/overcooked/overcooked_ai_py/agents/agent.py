@@ -101,6 +101,17 @@ class CoupledPlanningPair(AgentPair):
         )
         return joint_action_plan[0] if len(joint_action_plan) > 0 else (None, None)
 
+# Wrap AgentPair in a class that Fits PettingZoo
+class AgentPairPettingZoo(AgentPair):
+    def __init__(self, *agents, allow_duplicate_agents=False):
+        super().__init__(*agents, allow_duplicate_agents=allow_duplicate_agents)
+        
+    def joint_action(self, state):
+        agent_names = ["agent_0", "agent_1"]
+        # Scalar Value
+        agent_0_action = self.a0.action(state[agent_names[0]])
+        agent_1_action = self.a1.action(state[agent_names[1]])
+        return {"agent_0": agent_0_action, "agent_1": agent_1_action}
 
 class AgentFromPolicy(Agent):
     """
@@ -480,3 +491,54 @@ class GreedyHumanModel(Agent):
             assert len(motion_goals) != 0
 
         return motion_goals
+
+
+class KeyboardAgent(Agent):
+    """
+    An agent that takes input from the keyboard to select actions.
+        ACTION_TO_CHAR = {
+        Direction.NORTH: "↑", w
+        Direction.SOUTH: "↓", s
+        Direction.EAST: "→", d
+        Direction.WEST: "←", a
+        STAY: "stay", else
+        INTERACT: "interact", c
+    }
+    """
+
+    def __init__(self, sim_threads=None):
+        self.sim_threads = sim_threads
+        self.player_id = None
+
+    def action(self, state):
+        print(state)
+        action = input("Enter action: ")
+        # map action to index
+        if action == "c":
+            return 5
+            return Action.INTERACT
+        elif action == "w":
+            return 0
+            return Direction.NORTH
+        elif action == "s":
+            return 1
+            return Direction.SOUTH
+        elif action == "d":
+            return 2
+            return Direction.EAST
+        elif action == "a":
+            return 3
+            return Direction.WEST
+        else:
+            return 4
+            return Action.STAY
+        
+        
+        # return Action.ALL_ACTIONS[int(action)]
+    
+    def featurize(self, overcookedState):
+        foo = self.mdp.lossless_state_encoding(overcookedState)[self.player_id] * 255
+        return [foo, foo]
+
+    def direct_action(self, obs):
+        return [Action.ACTION_TO_INDEX[input("Enter action: ")] for _ in range(self.sim_threads)]
