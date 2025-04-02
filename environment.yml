@@ -1,4 +1,4 @@
-name: zsceval
+name: zscevalimport
 channels:
   - pytorch
   - nvidia
