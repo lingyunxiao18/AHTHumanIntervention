@@ -25,12 +25,12 @@ np.random.seed(42)
 torch.manual_seed(42)
 
 # Global configuration variables (update these as needed)
-LAYOUT_NAME = "random1"
+LAYOUT_NAME = "random3"
 POLICY_NAME0 = None   # initial ego policy name
 POLICY_NAME1 = None   # second pre-trained policy name
-POPULATION_YAML_PATH = "/home/lingyun/LARG/AHTHumanIntervention/zsceval/human_exp/configs/benchmark_configs/random1_benchmark.yml"
+POPULATION_YAML_PATH = "/home/lingyun/LARG/AHTHumanIntervention/zsceval/human_exp/configs/benchmark_configs/random3_benchmark.yml"
 POLICY_POOL_PATH = "/home/lingyun/LARG/AHTHumanIntervention/zsceval/policy_pool"
-HORIZON = 100   # Maximum steps per episode
+HORIZON = 1000   # Maximum steps per episode
 NUM_GAMES = 1   # Number of games to play
 DISPLAY = True  # Enable display
 
@@ -188,7 +188,7 @@ def main():
     policy_data = {}
 
     print(f"Available policies: {population_config.keys()}")
-    for policy_name in [POLICY_NAME0, POLICY_NAME1]:
+    for policy_name in population_config.keys():
         if policy_name not in population_config:
             raise ValueError(f"Policy {policy_name} not found in {POPULATION_YAML_PATH}")
         try:
@@ -220,84 +220,100 @@ def main():
     
     agent_pair = AgentPairPettingZoo(agent0, agent1, allow_duplicate_agents=True)
 
-    large_mdp = OvercookedGridworld.from_layout_name("random1", start_order_list=["any"], cook_time=5)
+    large_mdp = OvercookedGridworld.from_layout_name("random3", start_order_list=["any"], cook_time=5)
     base_env = OvercookedEnv(large_mdp, horizon=HORIZON)
     env = OvercookedEnvPettingZoo(base_env, agent_pair)
 
-    # Initialize pygame and create a display window.
-    pygame.init()
-    window_size = (800, 600)  # Adjust as needed based on your environment's rendered image dimensions
+    # Set window size to include game area and textbox area
+    GAME_WIDTH, GAME_HEIGHT = 800, 600
+    TEXTBOX_HEIGHT = 100
+    window_size = (GAME_WIDTH, GAME_HEIGHT + TEXTBOX_HEIGHT)
     screen = pygame.display.set_mode(window_size)
-    pygame.display.set_caption("Overcooked Simulation")
+    pygame.display.set_caption("Overcooked Simulation with Command Input")
     clock = pygame.time.Clock()
     fps = 12  # Adjust frame rate as needed
 
-    print("A pygame window should open. Press its close button to exit.")
-    print("During the game, press 'p' to trigger human intervention (e.g., switch policies).")
-    print(f"Observation space: {env.observation_space('agent_0')}")
-    print(f"Action space: {env.action_space('agent_0')}")
-
+    # Reset the environment and get the initial observation
     obs, _ = env.reset()
-    print(f"Initial observation shape: {obs['agent_0'].shape}")
+
+    # Font for rendering text input
+    font = pygame.font.Font(None, 32)
+    input_text = ""  # This holds the current text input
+    show_textbox = False  # Flag to show/hide the textbox
 
     # Main simulation loop
     for i in range(300):
-        # Process pygame events to keep the window responsive.
+        # Process pygame events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_p:
-                    user_cmd = input("Intervene! Type command (e.g., 'switch from fcp1 to cole1') or press Enter to continue: ").strip()
-                    if user_cmd.startswith("switch from"):
-                        parts = user_cmd.split()
-                        if len(parts) >= 5:
-                            source_policy = parts[2]
-                            target_policy = parts[4]
-                            if agent0.policy_name == source_policy:
-                                if target_policy in policy_data:
-                                    agent0.switch_policy(policy_data[target_policy])
+                if show_textbox:
+                    # When textbox is active, capture text input
+                    if event.key == pygame.K_RETURN:
+                        # Process command when Enter is pressed
+                        user_cmd = input_text.strip()
+                        if user_cmd.startswith("switch from"):
+                            parts = user_cmd.split()
+                            if len(parts) >= 5:
+                                source_policy = parts[2]
+                                target_policy = parts[4]
+                                if agent0.policy_name == source_policy:
+                                    if target_policy in policy_data:
+                                        agent0.switch_policy(policy_data[target_policy])
+                                    else:
+                                        print(f"Target policy '{target_policy}' not found in loaded policies.")
                                 else:
-                                    print(f"Target policy '{target_policy}' not found in loaded policies.")
-                            else:
-                                print(f"Agent0 is not using policy '{source_policy}'; current policy: {agent0.policy_name}")
+                                    print(f"Agent0 is not using policy '{source_policy}'; current policy: {agent0.policy_name}")
+                        # Clear text and hide textbox after processing
+                        input_text = ""
+                        show_textbox = False
+                    elif event.key == pygame.K_BACKSPACE:
+                        input_text = input_text[:-1]
+                    else:
+                        input_text += event.unicode
+                else:
+                    # When textbox is not active, check for command trigger
+                    if event.key == pygame.K_p:
+                        # Activate textbox for command input
+                        show_textbox = True
 
-        env.render("human")
+        # Render game area (assume env.render returns a surface)
+        # We let the render function cover the top GAME_HEIGHT pixels
+        env_surface = env.state_visualizer.render_state(env.base_env.state, grid=None)
+        # If necessary, scale or adjust env_surface to fit GAME_WIDTH x GAME_HEIGHT
+        game_surface = pygame.transform.scale(env_surface, (GAME_WIDTH, GAME_HEIGHT))
+        screen.blit(game_surface, (0, 0))
 
-        # Take a step in the environment.
-        a = agent_pair.joint_action(obs)
-        obs, reward, terminated, truncated, info = env.step(a)
-        if any(truncated.values()):
-            obs, _ = env.reset()
-            print("Environment reset.")
+        # Render textbox area at the bottom
+        textbox_rect = pygame.Rect(0, GAME_HEIGHT, GAME_WIDTH, TEXTBOX_HEIGHT)
+        pygame.draw.rect(screen, (200, 200, 200), textbox_rect)  # light gray background
 
+        # Display prompt and current input if textbox is active
+        prompt = "Enter command (e.g., 'switch from fcp1 to cole1'): " if show_textbox else "Press 'p' to intervene"
+        text_surface = font.render(prompt + input_text, True, (0, 0, 0))
+        screen.blit(text_surface, (10, GAME_HEIGHT + (TEXTBOX_HEIGHT - text_surface.get_height()) // 2))
+
+        pygame.display.flip()
         clock.tick(fps)
 
-    # Final steps and rendering after the loop
-    a = agent_pair.joint_action(obs)
-    obs, reward, terminated, truncated, info = env.step(a)
-    if any(truncated.values()):
-        obs, _ = env.reset()
-        print("Environment reset.")
-    env.render("human")
-    print(f"Observation shape: {obs['agent_0'].shape}")
-    
-    obs, reward, terminated, truncated, info = env.step(a)
-    print(f"Final observation shape: {obs['agent_0'].shape}")
-    print(f"Reward: {reward}")
-    print(f"Terminated: {terminated}")
-    print(f"Truncated: {truncated}")
-    print(f"Info: {info}")
-    env.render("human")
-    
+        # Take a step in the environment if not waiting for input (or you can modify as needed)
+        if not show_textbox:
+            a = agent_pair.joint_action(obs)
+            obs, reward, terminated, truncated, info = env.step(a)
+            if any(truncated.values()):
+                obs, _ = env.reset()
+                print("Environment reset.")
+
+    # Final steps after the loop (if needed)
     pygame.quit()
 
 if __name__ == "__main__":
     # Set the global variables before running (example values)
-    LAYOUT_NAME = "random1"
+    LAYOUT_NAME = "random3"
     # Replace with actual policy names from your YAML
     POLICY_NAME0 = "fcp1"  
-    POLICY_NAME1 = "cole1"  
-    POPULATION_YAML_PATH = "/home/lingyun/LARG/AHTHumanIntervention/zsceval/human_exp/configs/benchmark_configs/random1_benchmark.yml"
+    POLICY_NAME1 = "fcp1"  
+    POPULATION_YAML_PATH = "/home/lingyun/LARG/AHTHumanIntervention/zsceval/human_exp/configs/benchmark_configs/random3_benchmark.yml"
     main()
