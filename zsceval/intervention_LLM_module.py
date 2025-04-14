@@ -1,9 +1,10 @@
 import os
 import json
-import openai
+from openai import OpenAI
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Ensure your OpenAI API key is set in the environment variable 'OPENAI_API_KEY'
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def process_command(user_command: str) -> dict:
     """
@@ -22,17 +23,15 @@ def process_command(user_command: str) -> dict:
         "recommended. Do not include any extra commentary. Output valid JSON only.\n\n"
         f"Human command: \"{user_command}\""
     )
-    
+
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a helpful strategic assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.0,
-        )
-        content = response.choices[0].message["content"]
+        response = client.chat.completions.create(model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a helpful strategic assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.0)
+        content = response.choices[0].message.content
         # Parse the JSON response
         result = json.loads(content)
     except Exception as e:
