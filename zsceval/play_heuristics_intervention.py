@@ -51,6 +51,25 @@ def convert_action(action):
         return mapping.get(action, action)
     return action
 
+def wrap_text(text, font, max_width):
+    """
+    Splits the text into multiple lines so that each line's width does not exceed max_width.
+    Returns a list of strings (lines).
+    """
+    words = text.split(" ")
+    lines = []
+    current_line = ""
+    for word in words:
+        test_line = current_line + word + " "
+        if font.size(test_line)[0] <= max_width:
+            current_line = test_line
+        else:
+            lines.append(current_line.strip())
+            current_line = word + " "
+    if current_line:
+        lines.append(current_line.strip())
+    return lines
+
 def main():
     # Create the MDP instance from layout.
     mdp = OvercookedGridworld.from_layout_name(LAYOUT_NAME, start_order_list=["any"], cook_time=5)
@@ -92,7 +111,7 @@ def main():
     input_text = ""
     show_textbox = False
 
-    # Step counter to simulate sudden changes.
+    # Step counter to simulate sudden behavior changes.
     step_counter = 0
 
     # --- Main Simulation Loop ---
@@ -131,12 +150,22 @@ def main():
         game_surface = pygame.transform.scale(env_surface, (GAME_WIDTH, GAME_HEIGHT))
         screen.blit(game_surface, (0, 0))
 
-        # Render the text input box.
+        # Render the textbox area.
         textbox_rect = pygame.Rect(0, GAME_HEIGHT, GAME_WIDTH, TEXTBOX_HEIGHT)
         pygame.draw.rect(screen, (200, 200, 200), textbox_rect)
-        prompt = "Enter command: " if show_textbox else "Press 'p' for command"
-        text_surface = font.render(prompt + input_text, True, (0, 0, 0))
-        screen.blit(text_surface, (10, GAME_HEIGHT + (TEXTBOX_HEIGHT - text_surface.get_height()) // 2))
+        # Combine prompt and text input.
+        if show_textbox:
+            text_to_render = "Enter command: " + input_text
+        else:
+            text_to_render = "Press 'p' for command"
+        # Wrap text into multiple lines if too long.
+        lines = wrap_text(text_to_render, font, GAME_WIDTH - 20)
+        y_offset = GAME_HEIGHT + 10  # A little padding from the top of the textbox.
+        for line in lines:
+            line_surface = font.render(line, True, (0, 0, 0))
+            screen.blit(line_surface, (10, y_offset))
+            y_offset += line_surface.get_height() + 2  # 2 pixels of spacing between lines.
+
         pygame.display.flip()
         clock.tick(fps)
 
@@ -145,7 +174,7 @@ def main():
             print("Simulation: Confederate switching to counterclockwise.")
             confederate.direction = False
 
-        # Only advance simulation when not in command input mode.
+        # Advance simulation if not in command input mode.
         if not show_textbox:
             # Each agent returns (action, info); extract the action and convert if needed.
             raw_joint_actions = agent_pair.joint_action(env.state)
@@ -153,7 +182,6 @@ def main():
             next_state, reward, done, info = env.step(joint_action)
             state = next_state
             step_counter += 1
-
             if done:
                 print("Episode ended. Resetting environment.")
                 env.reset()
