@@ -6,7 +6,7 @@ import pygame
 import time
 import numpy as np
 
-# --- Use the old (direct) import for OvercookedEnv ---
+# --- Direct import for OvercookedEnv ---
 from zsceval.envs.overcooked.overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 
 # --- Import Overcooked components ---
@@ -20,23 +20,25 @@ from zsceval.envs.overcooked.overcooked_ai_py.visualization.state_visualizer imp
 from zsceval.envs.overcooked.overcooked_ai_py.agents.agent import AgentPair
 from heuristic_agent import RotateAgent
 
+# --- Import the intervention module (LLM integration) ---
+from zsceval.intervention_LLM_module import process_command
+
 # --- Global configuration parameters ---
 LAYOUT_NAME = "random3"
-HORIZON = 100       # Maximum steps per episode
+HORIZON = 1000       # Maximum steps per episode
 NUM_GAMES = 1        # Number of games to simulate
 DISPLAY = True       # Enable display
 
 def convert_action(action):
     """
-    Helper function to ensure an action is valid.
-    If the action is given as a tuple (e.g. (0, 1)), we convert it to a valid action constant.
-    Valid motion actions are defined as:
-      Direction.NORTH: (0,-1)
-      Direction.SOUTH: (0,1)
-      Direction.EAST:  (1,0)
-      Direction.WEST:  (-1,0)
-    Action.STAY is (0, 0) and Action.INTERACT is "interact".
-    If an action is already valid (for example, the string "interact"), it is returned unchanged.
+    Convert an action expressed as a tuple (e.g. (0, 1)) to a valid action constant.
+    Valid motion actions are:
+      Direction.NORTH: (0, -1)
+      Direction.SOUTH: (0, 1)
+      Direction.EAST:  (1, 0)
+      Direction.WEST:  (-1, 0)
+    Action.STAY is (0,0) and Action.INTERACT is "interact".
+    If the action is already valid (for example "interact"), it is returned unchanged.
     """
     if isinstance(action, tuple) and len(action) == 2:
         mapping = {
@@ -53,47 +55,48 @@ def main():
     # Create the MDP instance from layout.
     mdp = OvercookedGridworld.from_layout_name(LAYOUT_NAME, start_order_list=["any"], cook_time=5)
 
-    # Instantiate two heuristic agents.
-    # For player 0, use clockwise rotation.
-    agent_clockwise = RotateAgent(direction=True)
-    agent_clockwise.set_agent_index(0)
-    agent_clockwise.set_mdp(mdp)
-
-    # For player 1, use counterclockwise rotation.
-    agent_counterclockwise = RotateAgent(direction=True)
-    agent_counterclockwise.set_agent_index(1)
-    agent_counterclockwise.set_mdp(mdp)
+    # --- Agent Initialization ---
+    # Ego agent (agent 0) starts with clockwise heuristic.
+    ego_agent = RotateAgent(direction=True)
+    ego_agent.set_agent_index(0)
+    ego_agent.set_mdp(mdp)
+    
+    # Confederate agent (agent 1) starts with clockwise heuristic.
+    confederate = RotateAgent(direction=True)
+    confederate.set_agent_index(1)
+    confederate.set_mdp(mdp)
 
     # Compose the agent pair.
-    agent_pair = AgentPair(agent_clockwise, agent_counterclockwise, allow_duplicate_agents=True)
+    agent_pair = AgentPair(ego_agent, confederate, allow_duplicate_agents=True)
     agent_pair.set_mdp(mdp)
 
     # Create the environment using the legacy OvercookedEnv.
     env = OvercookedEnv(mdp, horizon=HORIZON)
-    
-    # Reset the environment.
-    env.reset()
-    state = env.state  # Access the initial OvercookedState.
+    env.reset()  
+    state = env.state  # Access initial OvercookedState.
 
     # --- Setup Pygame Display ---
     GAME_WIDTH, GAME_HEIGHT = 800, 600
     TEXTBOX_HEIGHT = 100
     window_size = (GAME_WIDTH, GAME_HEIGHT + TEXTBOX_HEIGHT)
     screen = pygame.display.set_mode(window_size)
-    pygame.display.set_caption("Overcooked Simulation: Heuristic Agents")
+    pygame.display.set_caption("Overcooked Simulation: Intervention Module Active")
     clock = pygame.time.Clock()
     fps = 1  # Frames per second
 
     # Create a StateVisualizer to render the OvercookedState.
     state_visualizer = StateVisualizer(grid=mdp.terrain_mtx)
 
-    # Setup font for text input (optional).
+    # Setup font for text input.
     font = pygame.font.Font(None, 32)
     input_text = ""
     show_textbox = False
 
+    # Step counter to simulate sudden changes.
+    step_counter = 0
+
     # --- Main Simulation Loop ---
-    for i in range(300):
+    while True:
         # Process Pygame events.
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -103,7 +106,16 @@ def main():
                 if show_textbox:
                     if event.key == pygame.K_RETURN:
                         user_cmd = input_text.strip()
-                        # (Optional: process command input here.)
+                        # Use the real LLM-based intervention module.
+                        intervention = process_command(user_cmd)
+                        new_heuristic = intervention.get("ego_agent_new_heuristic", None)
+                        if new_heuristic:
+                            if new_heuristic == "counterclockwise":
+                                print("Intervention: Ego agent switching to counterclockwise.")
+                                ego_agent.direction = False
+                            elif new_heuristic == "clockwise":
+                                print("Intervention: Ego agent switching to clockwise.")
+                                ego_agent.direction = True
                         input_text = ""
                         show_textbox = False
                     elif event.key == pygame.K_BACKSPACE:
@@ -119,7 +131,7 @@ def main():
         game_surface = pygame.transform.scale(env_surface, (GAME_WIDTH, GAME_HEIGHT))
         screen.blit(game_surface, (0, 0))
 
-        # Render the textbox area.
+        # Render the text input box.
         textbox_rect = pygame.Rect(0, GAME_HEIGHT, GAME_WIDTH, TEXTBOX_HEIGHT)
         pygame.draw.rect(screen, (200, 200, 200), textbox_rect)
         prompt = "Enter command: " if show_textbox else "Press 'p' for command"
@@ -128,22 +140,25 @@ def main():
         pygame.display.flip()
         clock.tick(fps)
 
-        # Execute an environment step if not waiting for command input.
+        # Every 10 steps, simulate that the confederate suddenly changes behavior.
+        if step_counter == 5:
+            print("Simulation: Confederate switching to counterclockwise.")
+            confederate.direction = False
+
+        # Only advance simulation when not in command input mode.
         if not show_textbox:
-            # Get the joint action from the agent pair.
-            # Each agent returns a tuple (action, info); extract the action.
+            # Each agent returns (action, info); extract the action and convert if needed.
             raw_joint_actions = agent_pair.joint_action(env.state)
-            joint_action = tuple(convert_action(action_info[0]) for action_info in raw_joint_actions)
+            joint_action = tuple(convert_action(a_info[0]) for a_info in raw_joint_actions)
             next_state, reward, done, info = env.step(joint_action)
             state = next_state
-            print(state)
+            step_counter += 1
+
             if done:
                 print("Episode ended. Resetting environment.")
                 env.reset()
                 state = env.state
-            
-
-    pygame.quit()
+                step_counter = 0
 
 if __name__ == "__main__":
     main()
