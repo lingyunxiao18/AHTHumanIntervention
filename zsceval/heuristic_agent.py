@@ -59,7 +59,7 @@ class RotateAgent(Agent):
         (6, 2): [((7, 2), Interests.SERVE)]
     }
 
-    CLOCKWISE = {
+    COUNTERCLOCKWISE = {
         (6, 1): Direction.WEST,
         (5, 1): Direction.WEST,
         (4, 1): Direction.WEST,
@@ -76,7 +76,7 @@ class RotateAgent(Agent):
         (6, 2): Direction.NORTH
     }
 
-    COUNTERCLOCKWISE = {
+    CLOCKWISE = {
         (6, 1): Direction.SOUTH,
         (5, 1): Direction.EAST,
         (4, 1): Direction.EAST,

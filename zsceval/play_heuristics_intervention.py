@@ -82,7 +82,7 @@ def main():
     screen = pygame.display.set_mode(window_size)
     pygame.display.set_caption("Overcooked Simulation: Intervention Module Active")
     clock = pygame.time.Clock()
-    fps = 1  # Frames per second
+    fps = 5  # Frames per second
 
     # Create a StateVisualizer to render the OvercookedState.
     state_visualizer = StateVisualizer(grid=mdp.terrain_mtx)
@@ -141,7 +141,7 @@ def main():
         clock.tick(fps)
 
         # Every 10 steps, simulate that the confederate suddenly changes behavior.
-        if step_counter == 5:
+        if step_counter == 10:
             print("Simulation: Confederate switching to counterclockwise.")
             confederate.direction = False
 

@@ -8,7 +8,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def process_command(user_command: str) -> dict:
     """
-    Uses OpenAI's GPT-4 to process a human intervention command.
+    Uses OpenAI's GPT-4.1 nano to process a human intervention command.
     Based on the input command, outputs a JSON object with a single key "ego_agent_new_heuristic".
     The value is expected to be either "clockwise", "counterclockwise", or null if no change is needed.
     
@@ -16,23 +16,26 @@ def process_command(user_command: str) -> dict:
        {"ego_agent_new_heuristic": "counterclockwise"}
     """
     prompt = (
-        "You are a strategic assistant that analyzes a human intervention command to generate "
-        "instructions for a robotic cooking agent's heuristic adjustment in Overcooked. "
-        "Based on the following human command, output a single JSON object with one key, "
-        "'ego_agent_new_heuristic', whose value is either 'clockwise', 'counterclockwise', or null if no change is "
-        "recommended. Do not include any extra commentary. Output valid JSON only.\n\n"
+        "You are the ego agent in an Overcooked simulation. "
+        "You are observing your confederate agent's behavior, which has recently changed unexpectedly. "
+        "A human controller is providing high-level intervention instructions to adjust your strategy. "
+        "Based on the following human command, decide whether you need to change your heuristic. "
+        "If a change is required, output a JSON object with one key, 'ego_agent_new_heuristic', "
+        "with its value set to either 'clockwise' or 'counterclockwise'. If no change is necessary, output null for the value. "
+        "Do not include any additional commentary or keys; output valid JSON only.\n\n"
         f"Human command: \"{user_command}\""
     )
 
     try:
-        response = client.chat.completions.create(model="gpt-4",
-        messages=[
-            {"role": "system", "content": "You are a helpful strategic assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.0)
+        response = client.chat.completions.create(
+            model="gpt-4.1-nano",  # Updated to use GPT-4.1 nano model.
+            messages=[
+                {"role": "system", "content": "You are a strategic assistant working as the ego agent in an Overcooked simulation."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0
+        )
         content = response.choices[0].message.content
-        # Parse the JSON response
         result = json.loads(content)
     except Exception as e:
         print("Error during LLM processing:", e)
