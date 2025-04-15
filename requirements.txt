@@ -19,7 +19,7 @@ loguru
 dppy
 openpyxl
 rich
-numpy==1.22
+numpy
 numba
 pre-commit
 # human exp
