@@ -189,7 +189,7 @@ class OvercookedEnv:
         self.reset()
         return successor_state, done
 
-    def run_agents(self, agent_pair, include_final_state=False, display=False, display_until=np.Inf):
+    def run_agents(self, agent_pair, include_final_state=False, display=False, display_until=np.inf):
         """
         Trajectory returned will a list of state-action pairs (s_t, joint_a_t, r_t, done_t).
         """
@@ -236,7 +236,7 @@ class OvercookedEnv:
         final_state=False,
         agent_idx=0,
         reward_shaping=0.0,
-        display_until=np.Inf,
+        display_until=np.inf,
         info=True,
     ):
         """
