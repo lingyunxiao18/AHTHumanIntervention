@@ -155,9 +155,9 @@ def main():
         pygame.draw.rect(screen, (200, 200, 200), textbox_rect)
         # Combine prompt and text input.
         if show_textbox:
-            text_to_render = "Enter command: " + input_text
+            text_to_render = "Please enter your intervention command here: " + input_text
         else:
-            text_to_render = "Press 'p' for command"
+            text_to_render = "Press 'p' to pause the game and enter command."
         # Wrap text into multiple lines if too long.
         lines = wrap_text(text_to_render, font, GAME_WIDTH - 20)
         y_offset = GAME_HEIGHT + 10  # A little padding from the top of the textbox.
@@ -181,6 +181,7 @@ def main():
             joint_action = tuple(convert_action(a_info[0]) for a_info in raw_joint_actions)
             next_state, reward, done, info = env.step(joint_action)
             state = next_state
+            print(state)
             step_counter += 1
             if done:
                 print("Episode ended. Resetting environment.")
