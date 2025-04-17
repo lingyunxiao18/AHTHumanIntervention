@@ -5,6 +5,7 @@ import random
 import pygame
 import time
 import numpy as np
+from stable_baselines3 import PPO
 
 # --- Direct import for OvercookedEnv ---
 from zsceval.envs.overcooked.overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
@@ -76,18 +77,19 @@ def main():
 
     # --- Agent Initialization ---
     # Ego agent (agent 0) starts with clockwise heuristic.
-    ego_agent = RotateAgent(direction=True)
-    ego_agent.set_agent_index(0)
-    ego_agent.set_mdp(mdp)
+    # ego_agent = RotateAgent(direction=True)
+    # ego_agent.set_agent_index(0)
+    # ego_agent.set_mdp(mdp)
+    ego_agent = PPO.load("best_response_clockwise.zip", device="cpu") 
     
     # Confederate agent (agent 1) starts with clockwise heuristic.
     confederate = RotateAgent(direction=True)
     confederate.set_agent_index(1)
     confederate.set_mdp(mdp)
 
-    # Compose the agent pair.
-    agent_pair = AgentPair(ego_agent, confederate, allow_duplicate_agents=True)
-    agent_pair.set_mdp(mdp)
+    # # Compose the agent pair.
+    # agent_pair = AgentPair(ego_agent, confederate, allow_duplicate_agents=True)
+    # agent_pair.set_mdp(mdp)
 
     # Create the environment using the legacy OvercookedEnv.
     env = OvercookedEnv(mdp, horizon=HORIZON)
@@ -99,7 +101,7 @@ def main():
     TEXTBOX_HEIGHT = 100
     window_size = (GAME_WIDTH, GAME_HEIGHT + TEXTBOX_HEIGHT)
     screen = pygame.display.set_mode(window_size)
-    pygame.display.set_caption("Overcooked Simulation: Intervention Module Active")
+    pygame.display.set_caption("Overcooked Simulation: PPO Best-Response vs Heuristic")
     clock = pygame.time.Clock()
     fps = 5  # Frames per second
 
@@ -176,18 +178,13 @@ def main():
 
         # Advance simulation if not in command input mode.
         if not show_textbox:
-            # Each agent returns (action, info); extract the action and convert if needed.
-            raw_joint_actions = agent_pair.joint_action(env.state)
-            joint_action = tuple(convert_action(a_info[0]) for a_info in raw_joint_actions)
-            next_state, reward, done, info = env.step(joint_action)
+            obs = np.zeros((84, 84, 3), dtype=np.uint8)
+            a0_idx, _ = ego_agent.predict(obs, deterministic=True)
+            a0 = Action.ALL_ACTIONS[int(a0_idx)]
+            a1, _ = confederate.action(env.state)
+            next_state, reward, done, info = env.step((a0, a1))
             state = next_state
-            print(state)
             step_counter += 1
-            if done:
-                print("Episode ended. Resetting environment.")
-                env.reset()
-                state = env.state
-                step_counter = 0
 
 if __name__ == "__main__":
     main()

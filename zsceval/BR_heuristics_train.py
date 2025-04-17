@@ -62,8 +62,7 @@ class OvercookedRLWrapper(gym.Env):
         # Build the Overcooked gridworld.
         self.mdp = OvercookedGridworld.from_layout_name(layout_name, start_order_list=["any"], cook_time=5)
         # Create the Overcooked environment.
-        self.env = OvercookedEnv(self.mdp, horizon=horizon)  # :contentReference[oaicite:6]{index=6}&#8203;:contentReference[oaicite:7]{index=7}
-        self.env.reset()
+        self.env = OvercookedEnv(self.mdp, horizon=horizon)  
 
         # Initialize the confederate agent using the RotateAgent heuristic.
         confederate = RotateAgent(direction=confederate_direction)
@@ -119,7 +118,7 @@ class OvercookedRLWrapper(gym.Env):
         pass
 
 # Training function for best-response RL policy.
-def train_best_response(confederate_direction, model_save_path, total_timesteps=100000):
+def train_best_response(confederate_direction, model_save_path, total_timesteps=1000000):
     """
     Trains a best-response policy using PPO against a fixed confederate.
     Args:
@@ -128,7 +127,7 @@ def train_best_response(confederate_direction, model_save_path, total_timesteps=
         total_timesteps (int): Number of training timesteps.
     """
     dummy_agent = DummyRLAgent()
-    env = OvercookedRLWrapper(layout_name="random3", horizon=1000,
+    env = OvercookedRLWrapper(layout_name="random3", horizon=500,
                               confederate_direction=confederate_direction,
                               best_response_agent=dummy_agent)
     # Uncomment the following line to check the environment for errors.
@@ -142,7 +141,7 @@ def train_best_response(confederate_direction, model_save_path, total_timesteps=
 
 if __name__ == '__main__':
     # Train best-response policy against the confederate with clockwise rotation.
-    train_best_response(confederate_direction=True, model_save_path="best_response_clockwise.zip", total_timesteps=100000)
+    train_best_response(confederate_direction=True, model_save_path="best_response_clockwise.zip", total_timesteps=10000000)
     
     # Train best-response policy against the confederate with counterclockwise rotation.
-    train_best_response(confederate_direction=False, model_save_path="best_response_counterclockwise.zip", total_timesteps=100000)
+    train_best_response(confederate_direction=False, model_save_path="best_response_counterclockwise.zip", total_timesteps=10000000)

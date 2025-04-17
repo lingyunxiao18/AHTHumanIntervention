@@ -150,7 +150,7 @@ class RotateAgent(Agent):
                     else:
                         return Direction.EAST, {}
                     
-        return self.CLOCKWISE[me.position] if self.direction else self.COUNTERCLOCKWISE[me.position], {}
+        return self.COUNTERCLOCKWISE[me.position] if self.direction else self.CLOCKWISE[me.position], {}
 
     def set_agent_index(self, agent_index):
         self.agent_index = agent_index 
