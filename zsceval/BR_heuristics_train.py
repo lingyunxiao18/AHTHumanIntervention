@@ -85,27 +85,29 @@ class OvercookedRLWrapper(gym.Env):
         self.current_action = None
 
     def step(self, action):
-        """
-        Injects the provided action into the best-response agent and steps the environment.
-        Args:
-            action (int): Discrete action index chosen by the RL policy.
-        Returns:
-            next_obs, reward, done, info: Standard Gym step tuple.
-        """
-        # Save the RL action.
-        self.current_action = action
+        # 1) Convert the SB3 action (which may be a numpy scalar/array) to a Python int
+        if isinstance(action, (np.ndarray, np.generic)):
+            action = int(action)
 
-        # Override the best-response agent's action to return the chosen action.
-        original_action_fn = self.agent_pair.agents[0].action
-        self.agent_pair.agents[0].action = lambda state: (self.current_action, {})
+        # 2) Map that int into Overcooked’s Action enum
+        act_enum = Action.ALL_ACTIONS[action]
 
-        # Compute joint actions and step the environment.
-        joint_action = self.agent_pair.joint_action(self.env.state)
+        # 3) Temporarily override your dummy agent to return that enum
+        orig_fn = self.agent_pair.agents[0].action
+        self.agent_pair.agents[0].action = lambda state: (act_enum, {})
+
+        # 4) Get the joint (action,info) pair and strip off the infos
+        paired = self.agent_pair.joint_action(self.env.state)
+        joint_action = (paired[0][0], paired[1][0])   # tuple of two Action enums
+
+        # 5) Step OvercookedEnv with raw enums
         next_state, reward, done, info = self.env.step(joint_action)
-        next_obs = np.zeros((84, 84, 3), dtype=np.uint8)  # Dummy observation; replace as needed
 
-        # Restore the original action function.
-        self.agent_pair.agents[0].action = original_action_fn
+        # 6) Restore the original method
+        self.agent_pair.agents[0].action = orig_fn
+
+        # 7) Return dummy obs, reward, done, info as before
+        next_obs = np.zeros((84, 84, 3), dtype=np.uint8)
         return next_obs, reward, done, info
 
     def reset(self):
@@ -133,7 +135,7 @@ def train_best_response(confederate_direction, model_save_path, total_timesteps=
     # check_env(env)
 
     # Create a PPO model (adjust policy and hyperparameters as needed).
-    model = PPO('MlpPolicy', env, verbose=1)
+    model = PPO('MlpPolicy', env, verbose=1, device='cpu')
     model.learn(total_timesteps=total_timesteps)
     model.save(model_save_path)
     print("Saved best-response model to", model_save_path)
