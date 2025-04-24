@@ -18,7 +18,7 @@ Modified by Zhihan (Minor edits)
 #         "counter_circuit_o_1order"
 # )
 mdp = OvercookedGridworld.from_layout_name(
-        "random1"
+        "random3"
 )
 
 class Interests(Enum):
@@ -162,3 +162,63 @@ class RotateAgent(Agent):
         self.agent_index = None
         self.mdp = None
         self.COOK_STATE = [0, 0]
+
+class OnionOnlyAgent(Agent):
+    """
+    A heuristic agent that only picks up onions and deposits them into pots.
+    Ignores plates, dishes, soups, and serving entirely.
+    """
+    def __init__(self, mlam):
+        # mlam: MediumLevelActionManager from your OvercookedEnv
+        self.mlam = mlam
+        self.mdp = mlam.mdp
+
+    def set_agent_index(self, agent_index):
+        self.agent_index = agent_index
+
+    def reset(self):
+        # No history needed for this simple heuristic
+        pass
+
+    def action(self, state):
+        player = state.players[self.agent_index]
+        # Get onion counters and pot states
+        counter_objects = self.mlam.mdp.get_counter_objects_dict(
+            state,
+            list(self.mlam.mdp.terrain_pos_dict["X"])
+        )
+        pot_states = self.mlam.mdp.get_pot_states(state)
+
+        # 1) If not holding anything, plan to pick up an onion
+        if not player.has_object():
+            goals = self.mlam.pickup_onion_actions(counter_objects)
+
+        # 2) If holding an onion, plan to put it in a pot
+        elif player.get_object().name == "onion":
+            goals = self.mlam.put_onion_in_pot_actions(pot_states)
+
+        # 3) Otherwise, do nothing
+        else:
+            return Action.STAY, {}
+
+        # Filter for valid goals
+        valid_goals = [
+            g for g in goals
+            if self.mlam.motion_planner.is_valid_motion_start_goal_pair(
+                player.pos_and_or, g
+            )
+        ]
+        if not valid_goals:
+            return Action.STAY, {}
+
+        # Choose the lowest‐cost plan among valid goals
+        start = player.pos_and_or
+        best_action = Action.STAY
+        min_cost = float("inf")
+        for goal in valid_goals:
+            plan, _, cost = self.mlam.motion_planner.get_plan(start, goal)
+            if cost < min_cost:
+                min_cost = cost
+                best_action = plan[0][0]
+
+        return best_action, {}

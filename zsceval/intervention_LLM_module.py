@@ -17,14 +17,18 @@ def process_command(user_command: str) -> dict:
     """
     prompt = (
         "You are the ego agent in an Overcooked simulation. "
-        "You are observing your confederate agent's behavior, which has recently changed unexpectedly. "
-        "A human controller is providing high-level intervention instructions to adjust your strategy. "
-        "Based on the following human command, decide whether you need to change your heuristic. "
-        "If a change is required, output a JSON object with one key, 'ego_agent_new_heuristic', "
-        "with its value set to either 'clockwise' or 'counterclockwise'. If no change is necessary, output null for the value. "
-        "Do not include any additional commentary or keys; output valid JSON only.\n\n"
+        "You are collaborating with another agent (the confederate) to efficiently complete cooking tasks. "
+        "You use a heuristic-based movement strategy (either clockwise or counterclockwise) to navigate the kitchen. "
+        "A human controller provides high-level commands to help you adjust your strategy if needed. "
+        "Carefully read the human command provided below. "
+        "Decide if this command requires you to change your current heuristic strategy to better align with your teammate's actions. "
+        "If a change is necessary, output a JSON object with a single key, 'ego_agent_new_heuristic', "
+        "and set its value to either 'clockwise' or 'counterclockwise'. "
+        "If no change is necessary based on the command, output the value null. "
+        "Output valid JSON only, with no additional commentary or keys.\n\n"
         f"Human command: \"{user_command}\""
     )
+
 
     try:
         response = client.chat.completions.create(
