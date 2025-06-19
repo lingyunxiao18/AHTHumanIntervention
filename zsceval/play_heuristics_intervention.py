@@ -18,7 +18,7 @@ from zsceval.envs.overcooked.overcooked_ai_py.visualization.state_visualizer imp
 
 # --- Import Agent classes ---
 from zsceval.envs.overcooked.overcooked_ai_py.agents.agent import AgentPair
-from heuristic_agent import RotateAgent
+from heuristic_agent import RotateAgent, OnionToPotAgent, PlateAgent
 
 # --- Import the intervention module (LLM integration) ---
 from zsceval.intervention_LLM_module import process_command
@@ -77,10 +77,12 @@ def main():
     # --- Agent Initialization ---
     # Ego agent (agent 0) starts with clockwise heuristic.
     ego_agent = RotateAgent(direction=True)
+    # ego_agent = PlateAgent()
     ego_agent.set_agent_index(0)
     ego_agent.set_mdp(mdp)
     
     # Confederate agent (agent 1) starts with clockwise heuristic.
+    # confederate = OnionToPotAgent()
     confederate = RotateAgent(direction=True)
     confederate.set_agent_index(1)
     confederate.set_mdp(mdp)
@@ -130,10 +132,10 @@ def main():
                         new_heuristic = intervention.get("ego_agent_new_heuristic", None)
                         if new_heuristic:
                             if new_heuristic == "counterclockwise":
-                                print("Intervention: Ego agent switching to counterclockwise.")
+                                # print("Intervention: Ego agent switching to counterclockwise.")
                                 ego_agent.direction = False
                             elif new_heuristic == "clockwise":
-                                print("Intervention: Ego agent switching to clockwise.")
+                                # print("Intervention: Ego agent switching to clockwise.")
                                 ego_agent.direction = True
                         input_text = ""
                         show_textbox = False
@@ -170,10 +172,18 @@ def main():
         clock.tick(fps)
 
         # Every 10 steps, simulate that the confederate suddenly changes behavior.
-        if step_counter == 10:
-            print("Simulation: Confederate switching to counterclockwise.")
+        if step_counter == 20:
+            print("Simulation: Confederate switching...")
             confederate.direction = False
-
+            # confederate = PlateAgent()
+            # confederate.set_agent_index(1)
+            # confederate.set_mdp(mdp)
+            # agent_pair = AgentPair(ego_agent, confederate, allow_duplicate_agents=True)
+            # agent_pair.set_mdp(mdp)
+            # print("Simulation: Confederate switching to Onion Only.")
+            # confederate = OnionToPotAgent()
+            # confederate.set_agent_index(1)
+            # confederate.set_mdp(mdp)
         # Advance simulation if not in command input mode.
         if not show_textbox:
             # Each agent returns (action, info); extract the action and convert if needed.
