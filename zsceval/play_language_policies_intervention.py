@@ -21,7 +21,7 @@ from zsceval.envs.overcooked.overcooked_ai_py.visualization.state_visualizer imp
 from zsceval.envs.overcooked.overcooked_ai_py.agents.agent import AgentPair
 
 # --- Our language-conditioned policy module ---
-from language_conditioned_policy import (
+from zsceval.language.language_conditioned_policy import (
     build_env_prompt,
     LangConditionedPolicy,
     tokenize,
@@ -92,6 +92,14 @@ def main():
         max_len=MAX_LEN,
         num_actions=num_actions,
     )
+
+    # load the checkpoint if pretrained policy is available
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # ckpt = torch.load("checkpoints/lang_pretrained.pt", map_location=device)
+    # policy.load_state_dict(ckpt)
+    # policy.to(device)
+    # policy.eval()
+    # print(f"✅ Loaded pretrained policy from checkpoints/lang_pretrained.pt on {device}")
 
     # 4) Wrap into agents with fallback logic
     class LangAgent:
