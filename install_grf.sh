@@ -24,7 +24,7 @@ pip uninstall gfootball -y
 pip install gfootball
 
 (
-    cd zsceval/envs/grf/
+    cd AHT_human_intervention/envs/grf/
     GFootballPath=$(pip show gfootball | grep Location | cut -d' ' -f2)
     ScenariosPath="$GFootballPath/gfootball/scenarios"
     cp scenarios/academy_3_vs_1_with_keeper_hard.py $ScenariosPath/academy_3_vs_1_with_keeper.py

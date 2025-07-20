@@ -8,12 +8,12 @@ from setuptools import setup
 
 def get_version() -> str:
     # https://packaging.python.org/guides/single-sourcing-package-version/
-    init = open(os.path.join("zsceval", "__init__.py")).read().split()
+    init = open(os.path.join("AHT_human_intervention", "__init__.py")).read().split()
     return init[init.index("__version__") + 2][1:-1]
 
 
 setup(
-    name="zsceval",  # Replace with your own username
+    name="AHT_human_intervention",  # Replace with your own username
     version=get_version(),
     description="zero-shot coordination benchmark",
     long_description=open("README.md", encoding="utf8").read(),

@@ -86,7 +86,7 @@ conda env create -f environment.yml
 After installation, here is the steps to use ZSC-Eval for evaluating the ZSC algorithms. We use the Overcooked Environment as an example.
 
 ```shell
-cd zsceval/scripts/overcooked
+cd AHT_human_intervention/scripts/overcooked
 ```
 
 ### Setup the Policy Config
@@ -125,7 +125,7 @@ cd ..
 python prep/select_bias_agent_br.py --env overcooked --layout {layout} --k 10 --N 1000000
 ```
 
-Copy the results in `zsceval/scripts/prep/results/{layout}` to `zsceval/utils/bias_agent_vars.py`.
+Copy the results in `AHT_human_intervention/scripts/prep/results/{layout}` to `AHT_human_intervention/utils/bias_agent_vars.py`.
 
 Generate benchmark yamls:
 
@@ -288,13 +288,13 @@ We use the `random3_m` layout in Overcooked as an example for all generated yaml
 We also provide the pre-trained models for these baselines, you can download pre-trained models from [huggingface](https://huggingface.co/Leoxxxxh/ZSC-Eval-policy_pool):
 
 ```shell
-cd zsceval
+cd AHT_human_intervention
 git clone https://huggingface.co/Leoxxxxh/ZSC-Eval-policy_pool policy_pool
 ```
 
 ## 👩🏻‍💻 Human Study
 
-We implement a human study platform, including game-playing, subjective ranking, and data collection. Details can be found in [zsceval/human_exp/README.md](zsceval/human_exp/README.md).
+We implement a human study platform, including game-playing, subjective ranking, and data collection. Details can be found in [AHT_human_intervention/human_exp/README.md](AHT_human_intervention/human_exp/README.md).
 
 ### Web UIs
 #### Game-playing
@@ -321,7 +321,7 @@ bash zsc_eval/human_exp/human_exp_up.sh
 
 ## 🛠️ Code Structure Overview
 
-`zsceval` contains:
+`AHT_human_intervention` contains:
 
 `algorithms/`:
 - `population/`: trainers for population-based ZSC algorithms
@@ -368,7 +368,7 @@ Firstly, the new environments should have consistent interfaces with those in [G
 
 We use GRF as an example to provide guidelines for including new environments in ZSC-Eval.
 
-The GRF environment is integrated in `zsceval/envs/grf/`:
+The GRF environment is integrated in `AHT_human_intervention/envs/grf/`:
 
 - `grf_env.py`: the environment wrapper to provide consistent interface with Gym.
 - `scenarios/`: ZSC scenarios.
