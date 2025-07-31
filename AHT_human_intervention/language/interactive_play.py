@@ -16,68 +16,12 @@ from language_conditioned_policy import (
     VOCAB,
     MAX_LEN,
 )
+from AHT_human_intervention.intervention_LLM_module import process_command
+from AHT_human_intervention.language.shared_lang_agent import SharedLangAgent
 
-class InteractiveLangAgent:
-    """Interactive agent that takes language commands via keyboard."""
-    
-    def __init__(self, model_path, layout_name="random3", agent_idx=0, device="cpu"):
-        self.device = torch.device(device)
-        self.agent_idx = agent_idx
-        self.current_command = ""
-        
-        # Load MDP
-        self.mdp = OvercookedGridworld.from_layout_name(layout_name)
-        
-        # Get model dimensions
-        example_state = torch.FloatTensor(
-            self.mdp.lossless_state_encoding(self.mdp.get_standard_start_state())[0].flatten()
-        )
-        state_dim = example_state.numel()
-        num_actions = len(self.mdp.action_idx_to_name)
-        
-        # Initialize model
-        self.model = LangConditionedPolicy(
-            state_dim=state_dim,
-            vocab_size=len(VOCAB),
-            text_dim=128,
-            hidden_dim=256,
-            nhead=4,
-            num_layers=2,
-            max_len=MAX_LEN,
-            num_actions=num_actions,
-        )
-        
-        # Load pretrained weights
-        checkpoint = torch.load(model_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint)
-        self.model.to(self.device)
-        self.model.eval()
-        
-    def set_command(self, command):
-        """Set the language command for the agent."""
-        self.current_command = command
-        
-    def action(self, state):
-        """Get action based on current state and language command."""
-        if not self.current_command:
-            # Fallback to stay if no command given
-            return self.mdp.action_name_to_idx['stay']
-            
-        # Process state
-        state_vec = torch.FloatTensor(
-            self.mdp.lossless_state_encoding(state)[self.agent_idx].flatten()
-        ).unsqueeze(0).to(self.device)
-        
-        # Tokenize command
-        token_ids = tokenize(self.current_command, VOCAB, MAX_LEN).unsqueeze(0).to(self.device)
-        
-        # Get model prediction
-        with torch.no_grad():
-            logits = self.model(state_vec, token_ids)
-            probs = F.softmax(logits, dim=-1)
-            action_idx = torch.argmax(probs, dim=-1).item()
-            
-        return action_idx
+# Example agent instantiation:
+# agent0 = SharedLangAgent(env.mdp, agent_idx=0, model_path=MODEL_PATH)
+# agent1 = SharedLangAgent(env.mdp, agent_idx=1, model_path=MODEL_PATH)
 
 def wrap_text(text, font, max_width):
     """Wrap text to fit within max_width."""
@@ -112,8 +56,8 @@ def main():
     visualizer = StateVisualizer()
     
     # Create language-conditioned agents
-    agent0 = InteractiveLangAgent(MODEL_PATH, LAYOUT_NAME, agent_idx=0)
-    agent1 = InteractiveLangAgent(MODEL_PATH, LAYOUT_NAME, agent_idx=1)
+    agent0 = SharedLangAgent(env.mdp, agent_idx=0, model_path=MODEL_PATH)
+    agent1 = SharedLangAgent(env.mdp, agent_idx=1, model_path=MODEL_PATH)
     
     # Set up agent pair
     pair = AgentPair(agent0, agent1, allow_duplicate_agents=True)

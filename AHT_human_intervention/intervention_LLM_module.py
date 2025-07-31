@@ -2,7 +2,13 @@ import os
 import json
 from openai import OpenAI
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Initialize OpenAI client only if API key is available
+api_key = os.getenv("OPENAI_API_KEY")
+if api_key:
+    client = OpenAI(api_key=api_key)
+else:
+    client = None
+    print("Warning: OPENAI_API_KEY not set. LLM interventions will not work.")
 
 # Ensure your OpenAI API key is set in the environment variable 'OPENAI_API_KEY'
 
@@ -31,6 +37,10 @@ def process_command(user_command: str) -> dict:
 
 
     try:
+        if client is None:
+            print("OpenAI client not initialized. Returning null heuristic.")
+            return {"ego_agent_new_heuristic": None}
+            
         response = client.chat.completions.create(
             model="gpt-4.1-nano",  # Updated to use GPT-4.1 nano model.
             messages=[

@@ -1,5 +1,9 @@
 import torch
 import torch.nn as nn
+from transformers import DistilBertModel, DistilBertTokenizerFast
+
+# NOTE: Requires 'transformers' and 'torch' packages. Install with:
+# pip install transformers torch
 
 # Maximum token sequence length for language inputs
 MAX_LEN = 50
@@ -13,7 +17,6 @@ def build_env_prompt(state):
     """
     lines = []
     # Environment header and static layout
-    lines.append("=== Environment ===")
     layout_name = getattr(state.mdp, 'layout_name', state.mdp.__class__.__name__)
     lines.append(f"Kitchen layout: {layout_name}")
 
@@ -25,14 +28,12 @@ def build_env_prompt(state):
             lines.append(f"Pot {i} at {pos}, cooking {cooking}, time left {time_left}s")
 
     # Agents
-    lines.append("=== Agents ===")
     for agent_idx in range(state.num_agents):
         pos = state.agent_positions[agent_idx]
         holding = state.holding[agent_idx] if state.holding[agent_idx] is not None else 'nothing'
         lines.append(f"Agent{agent_idx} at {pos}, holding {holding}")
 
     # Ingredient counters
-    lines.append("=== Ingredient Counters ===")
     for counter_pos, counter_items in state.counters.items():
         items_str = ', '.join(counter_items) if counter_items else 'empty'
         lines.append(f"Counter at {counter_pos}: {items_str}")
@@ -40,29 +41,20 @@ def build_env_prompt(state):
     # Optional history/context
     history = getattr(state, 'history', [])
     if history:
-        lines.append("=== History ===")
         for speaker, msg in history[-4:]:
             lines.append(f"{speaker}: {msg}")
 
     return "\n".join(lines)
 
-
 # ----------------------------------------------------------------------------
-# 2. Language-conditioned policy network
+# 2. HuggingFace-based Language-conditioned policy network
 # ----------------------------------------------------------------------------
-class LangConditionedPolicy(nn.Module):
+class HuggingFaceLangConditionedPolicy(nn.Module):
     """
     π(a | s, ℓ): encodes state s and language ℓ to produce action logits.
+    Uses DistilBERT for language encoding.
     """
-    def __init__(self,
-                 state_dim: int,
-                 vocab_size: int,
-                 text_dim: int = 128,
-                 hidden_dim: int = 256,
-                 nhead: int = 4,
-                 num_layers: int = 2,
-                 max_len: int = MAX_LEN,
-                 num_actions: int = 6):
+    def __init__(self, state_dim: int, num_actions: int, text_dim: int = 768, hidden_dim: int = 256, freeze_bert: bool = True):
         super().__init__()
         # State encoder: simple 2-layer MLP
         self.state_encoder = nn.Sequential(
@@ -71,11 +63,11 @@ class LangConditionedPolicy(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU()
         )
-        # Text encoder: embedding + positional + Transformer
-        self.token_embed = nn.Embedding(vocab_size, text_dim)
-        self.pos_embed   = nn.Embedding(max_len, text_dim)
-        encoder_layer   = nn.TransformerEncoderLayer(d_model=text_dim, nhead=nhead)
-        self.text_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        # Text encoder: DistilBERT
+        self.text_encoder = DistilBertModel.from_pretrained('distilbert-base-uncased')
+        if freeze_bert:
+            for param in self.text_encoder.parameters():
+                param.requires_grad = False
         # Fusion & policy head
         self.policy_head = nn.Sequential(
             nn.Linear(hidden_dim + text_dim, hidden_dim),
@@ -83,40 +75,19 @@ class LangConditionedPolicy(nn.Module):
             nn.Linear(hidden_dim, num_actions)
         )
 
-    def forward(self, state_vec: torch.Tensor, token_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, state_vec: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         # state_vec: [B, state_dim]
-        # token_ids: [B, T]
+        # input_ids, attention_mask: [B, T]
         s_emb = self.state_encoder(state_vec)  # [B, hidden_dim]
-
-        # text encoding
-        B, T = token_ids.shape
-        positions = torch.arange(T, device=token_ids.device).unsqueeze(0).expand(B, T)
-        t = self.token_embed(token_ids) + self.pos_embed(positions)  # [B, T, text_dim]
-        t = t.transpose(0,1)                                        # [T, B, text_dim]
-        t_enc = self.text_encoder(t)                                # [T, B, text_dim]
-        l_emb = t_enc.mean(dim=0)                                   # [B, text_dim]
-
-        # fuse and predict
-        x = torch.cat([s_emb, l_emb], dim=-1)                    # [B, hidden+text]
-        logits = self.policy_head(x)                             # [B, num_actions]
+        bert_out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
+        l_emb = bert_out.last_hidden_state[:, 0, :]  # [B, text_dim] (CLS token)
+        x = torch.cat([s_emb, l_emb], dim=-1)  # [B, hidden+text]
+        logits = self.policy_head(x)  # [B, num_actions]
         return logits
 
-
 # ----------------------------------------------------------------------------
-# 3. Tokenizer
+# 3. Tokenizer helper
 # ----------------------------------------------------------------------------
-def tokenize(text: str, vocab: dict, max_len: int = MAX_LEN) -> torch.LongTensor:
-    tokens = text.lower().split()[:max_len]
-    ids = [vocab.get(tok, vocab.get("<unk>")) for tok in tokens]
-    # pad if shorter than max_len
-    ids += [vocab.get("<pad>")] * (max_len - len(ids))
-    return torch.tensor(ids, dtype=torch.long)
-
-
-# ----------------------------------------------------------------------------
-# 4. Vocabulary placeholder (populate with your tokens)
-# ----------------------------------------------------------------------------
-VOCAB = {
-    "<pad>": 0,
-    "<unk>": 1,
-}
+def get_hf_tokenizer():
+    """Returns a DistilBERT tokenizer (singleton pattern)."""
+    return DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')

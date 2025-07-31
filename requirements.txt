@@ -26,4 +26,10 @@ pre-commit
 flask
 markdown
 flask_cors
+# language models
+transformers
+torch
+absl-py
+openai
+scipy
 -e .

@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from AHT_human_intervention.envs.overcooked.overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from AHT_human_intervention.envs.overcooked.overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 from AHT_human_intervention.envs.overcooked.overcooked_ai_py.agents.agent import Agent
+from AHT_human_intervention.intervention_LLM_module import process_command
 
 from language_conditioned_policy import (
     build_env_prompt,

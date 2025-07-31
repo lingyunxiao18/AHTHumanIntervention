@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import openai
 import json
+from AHT_human_intervention.intervention_LLM_module import process_command
 
 # --- Direct import for OvercookedEnv ---
 from AHT_human_intervention.envs.overcooked.overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
@@ -19,15 +20,11 @@ from AHT_human_intervention.envs.overcooked.overcooked_ai_py.mdp.actions import 
 from AHT_human_intervention.envs.overcooked.overcooked_ai_py.visualization.state_visualizer import StateVisualizer
 # --- Import AgentPair class ---
 from AHT_human_intervention.envs.overcooked.overcooked_ai_py.agents.agent import AgentPair
+# --- Import a simple heuristic agent for confederate switch demo ---
+from AHT_human_intervention.envs.overcooked.overcooked_ai_py.agents.agent import StayAgent
 
 # --- Our language-conditioned policy module ---
-from AHT_human_intervention.language.language_conditioned_policy import (
-    build_env_prompt,
-    LangConditionedPolicy,
-    tokenize,
-    VOCAB,
-    MAX_LEN,
-)
+from AHT_human_intervention.language.shared_lang_agent import SharedLangAgent
 
 # Configure OpenAI API key (ensure OPENAI_API_KEY is set in your environment)
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -69,6 +66,7 @@ def main():
     LAYOUT_NAME = "random3"
     HORIZON = 400
     FPS = 5
+    TRADITIONAL_EGO = False  # Set True to run with a traditional (non-language) ego agent for comparison
 
     # 1) Load MDP and Env
     mdp = OvercookedGridworld.from_layout_name(LAYOUT_NAME)
@@ -78,73 +76,21 @@ def main():
     # 2) Visualizer
     visualizer = StateVisualizer(grid=mdp.terrain_mtx)
 
-    # 3) Instantiate language-conditioned policy
-    start_state = env.state
-    state_dim = mdp.lossless_state_encoding(start_state)[0].flatten().size
-    num_actions = len(mdp.action_idx_to_name)
-    policy = LangConditionedPolicy(
-        state_dim=state_dim,
-        vocab_size=len(VOCAB),
-        text_dim=128,
-        hidden_dim=256,
-        nhead=4,
-        num_layers=2,
-        max_len=MAX_LEN,
-        num_actions=num_actions,
-    )
-
-    # load the checkpoint if pretrained policy is available
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # ckpt = torch.load("checkpoints/lang_pretrained.pt", map_location=device)
-    # policy.load_state_dict(ckpt)
-    # policy.to(device)
-    # policy.eval()
-    # print(f"✅ Loaded pretrained policy from checkpoints/lang_pretrained.pt on {device}")
-
-    # 4) Wrap into agents with fallback logic
-    class LangAgent:
-        def __init__(self, policy, mdp, idx):
-            self.policy = policy
-            self.mdp = mdp
-            self.idx = idx
-            self.current_cmd = ""
-
-        def act(self, state):
-            cmd = self.current_cmd.strip().lower()
-            # Fallback to LLM if any token is out-of-vocab
-            tokens = cmd.split()
-            if any(tok not in VOCAB for tok in tokens):
-                prompt = build_env_prompt(state) + "\nHuman: " + self.current_cmd + "\nAI:"
-                resp = openai.ChatCompletion.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role":"user","content":prompt}],
-                    temperature=0.0
-                )
-                try:
-                    action_dict = json.loads(resp.choices[0].message.content)
-                    act_name = action_dict.get("action", "stay").upper()
-                    return getattr(Action, act_name, Action.STAY)
-                except Exception as e:
-                    print("LLM fallback failed, using local policy.", e)
-            # Otherwise use local transformer policy
-            arr = self.mdp.lossless_state_encoding(state)[self.idx].flatten()
-            s = torch.FloatTensor(arr).unsqueeze(0)
-            prompt = build_env_prompt(state) + "\nHuman: " + self.current_cmd
-            t = tokenize(prompt, VOCAB, MAX_LEN).unsqueeze(0)
-            logits = self.policy(s, t)
-            probs = torch.softmax(logits, dim=-1)
-            act_idx = int(torch.argmax(probs, dim=-1)[0])
-            return self.mdp.action_idx_to_action[act_idx]
-
-    ego_agent = LangAgent(policy, mdp, idx=0)
-    conf_agent = LangAgent(policy, mdp, idx=1)
+    # 3) Instantiate agents
+    if TRADITIONAL_EGO:
+        # Use a simple StayAgent as a traditional baseline
+        ego_agent = StayAgent(mdp, idx=0)
+        print("[INFO] Running with traditional (non-language) ego agent.")
+    else:
+        ego_agent = SharedLangAgent(mdp, agent_idx=0)
+    conf_agent = SharedLangAgent(mdp, agent_idx=1)
     pair = AgentPair(ego_agent, conf_agent, allow_duplicate_agents=True)
     pair.set_mdp(mdp)
 
     # 5) Pygame setup
     pygame.init()
     WIDTH, HEIGHT = 800, 600
-    TB_H = 100
+    TB_H = 120
     screen = pygame.display.set_mode((WIDTH, HEIGHT + TB_H))
     pygame.display.set_caption("Overcooked: Language-Conditioned Intervention")
     clock = pygame.time.Clock()
@@ -153,6 +99,9 @@ def main():
     input_text = ""
     show_tb = False
     step = 0
+    conf_switched = False
+    last_command = ""
+    last_heuristic = None
 
     # 6) Main loop
     while True:
@@ -164,8 +113,9 @@ def main():
                 if show_tb:
                     if e.key == pygame.K_RETURN:
                         cmd = input_text.strip()
-                        ego_agent.current_cmd = cmd
-                        conf_agent.current_cmd = cmd
+                        ego_agent.set_command(cmd)
+                        last_command = cmd
+                        print(f"[LOG] Human intervention: '{cmd}' at step {step}")
                         input_text = ""
                         show_tb = False
                     elif e.key == pygame.K_BACKSPACE:
@@ -184,21 +134,39 @@ def main():
         txt = "Enter cmd: " + input_text if show_tb else "Press 'p' to command"
         for i, line in enumerate(wrap_text(txt, font, WIDTH-20)):
             screen.blit(font.render(line, True, (0,0,0)), (10, HEIGHT+10 + i*30))
+        # Display last command and ego heuristic
+        if last_command:
+            screen.blit(font.render(f'Last command: {last_command}', True, (0,0,0)), (10, HEIGHT+70))
+        if hasattr(ego_agent, 'heuristic') and getattr(ego_agent, 'heuristic', None):
+            screen.blit(font.render(f'Ego heuristic: {ego_agent.heuristic}', True, (0,0,0)), (10, HEIGHT+100))
         pygame.display.flip()
         clock.tick(FPS)
 
         # 8) Simulation step
         if not show_tb:
+            # Confederate switch at step 20
+            if not conf_switched and step == 20:
+                conf_agent = StayAgent(mdp, idx=1)
+                pair = AgentPair(ego_agent, conf_agent, allow_duplicate_agents=True)
+                pair.set_mdp(mdp)
+                conf_switched = True
+                print(f"[LOG] Confederate agent switched to StayAgent at step {step}")
+            # Step environment
             raw = pair.joint_action(env.state)
             ja = tuple(convert_action(a[0]) for a in raw)
             nxt, r, done, _ = env.step(ja)
             env.state = nxt
             step += 1
+            # Log heuristic change
+            if hasattr(ego_agent, 'heuristic'):
+                if ego_agent.heuristic != last_heuristic:
+                    print(f"[LOG] Ego heuristic changed to: {ego_agent.heuristic} at step {step}")
+                    last_heuristic = ego_agent.heuristic
             if step == 20:
                 print("Sim: step 20 reached—fallback logic active for unknown commands.")
             if done:
                 print("Episode done, resetting.")
-                env.reset(); step = 0
+                env.reset(); step = 0; conf_switched = False
 
 if __name__ == "__main__":
     main()

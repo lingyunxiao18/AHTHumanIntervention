@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from AHT_human_intervention.envs.overcooked.overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from policy.language_conditioned_policy import LangConditionedPolicy, tokenize, build_env_prompt, vocab, max_len
+from AHT_human_intervention.intervention_LLM_module import process_command
 
 if __name__ == "__main__":
     # 1. Instantiate the Overcooked environment (use any layout name you have)
