@@ -20,26 +20,79 @@ from AHT_human_intervention.envs.overcooked.overcooked_ai_py.visualization.state
 from AHT_human_intervention.envs.overcooked.overcooked_ai_py.agents.agent import AgentPair
 from heuristic_agent import RotateAgent, OnionToPotAgent, PlateAgent
 
+
 # --- Import the intervention module (LLM integration) ---
 from AHT_human_intervention.intervention_LLM_module import process_command
 
+def switch_confederate_agent(env, ego_agent, agent_type, mdp):
+    """
+    Creates a new confederate agent of the specified type and returns a new agent pair.
+    
+    Args:
+        env: The environment instance
+        ego_agent: The ego agent instance
+        agent_type: String indicating which agent type to create
+        mdp: The MDP instance
+    
+    Returns:
+        A new AgentPair instance with the ego agent and new confederate
+    """
+    if agent_type == "clockwise":
+        confederate = RotateAgent(direction=True)
+    elif agent_type == "counterclockwise":
+        confederate = RotateAgent(direction=False)
+    elif agent_type == "onion_to_pot":
+        confederate = OnionToPotAgent(direction=True)
+    elif agent_type == "plate_agent":
+        confederate = PlateAgent(direction=True)
+    else:
+        raise ValueError(f"Unknown agent type: {agent_type}")
+    
+    confederate.set_agent_index(1)
+    confederate.set_mdp(mdp)
+    confederate.reset()  # Reset the agent's internal state
+    return AgentPair(ego_agent, confederate, allow_duplicate_agents=True)
+
 # --- Global configuration parameters ---
 LAYOUT_NAME = "random3"
-HORIZON = 1000       # Maximum steps per episode
+HORIZON = 100000       # Maximum steps per episode
 NUM_GAMES = 1        # Number of games to simulate
 DISPLAY = True       # Enable display
 
 def convert_action(action):
     """
-    Convert an action expressed as a tuple (e.g. (0, 1)) to a valid action constant.
-    Valid motion actions are:
-      Direction.NORTH: (0, -1)
-      Direction.SOUTH: (0, 1)
-      Direction.EAST:  (1, 0)
-      Direction.WEST:  (-1, 0)
-    Action.STAY is (0,0) and Action.INTERACT is "interact".
-    If the action is already valid (for example "interact"), it is returned unchanged.
+    Convert various action formats to valid action constants.
+    Valid motion actions can be:
+      - Direction objects (NORTH, SOUTH, EAST, WEST)
+      - Action objects (STAY, INTERACT)
+      - Tuples: (0, -1), (0, 1), (1, 0), (-1, 0)
+      - Integers: 0-5
+      - Strings: "interact"
+    Returns the appropriate Action or Direction constant.
     """
+    # If it's already a Direction or Action constant, return as is
+    if isinstance(action, (Direction, Action)):
+        return action
+    
+    # Handle integer actions from script agents
+    if isinstance(action, int):
+        # Handle negative integers (convert to Direction)
+        if action == -1:
+            return Direction.WEST
+        
+        mapping = {
+            0: Action.STAY,
+            1: Direction.EAST,
+            2: Direction.SOUTH,
+            3: Direction.NORTH,
+            4: Direction.WEST,
+            5: Action.INTERACT
+        }
+        if action in mapping:
+            return mapping[action]
+        raise ValueError(f"Invalid integer action: {action}")
+    
+    # Handle tuple actions from movement agents
     if isinstance(action, tuple) and len(action) == 2:
         mapping = {
             (0, 0): Action.STAY,
@@ -48,8 +101,17 @@ def convert_action(action):
             (1, 0): Direction.EAST,
             (-1, 0): Direction.WEST,
         }
-        return mapping.get(action, action)
-    return action
+        if action in mapping:
+            return mapping[action]
+        raise ValueError(f"Invalid tuple action: {action}")
+    
+    # Handle string actions (like "interact")
+    if isinstance(action, str):
+        if action == "interact":
+            return Action.INTERACT
+        raise ValueError(f"Invalid string action: {action}")
+        
+    raise ValueError(f"Unknown action type: {type(action)}, value: {action}")
 
 def wrap_text(text, font, max_width):
     """
@@ -72,17 +134,20 @@ def wrap_text(text, font, max_width):
 
 def main():
     # Create the MDP instance from layout.
-    mdp = OvercookedGridworld.from_layout_name(LAYOUT_NAME, start_order_list=["any"], cook_time=5)
+    mdp = OvercookedGridworld.from_layout_name(LAYOUT_NAME, start_order_list=None, cook_time=5)
+
+    # Create the environment using the legacy OvercookedEnv.
+    env = OvercookedEnv(mdp, horizon=HORIZON)
+    env.reset()  
+    state = env.state  # Access initial OvercookedState.
 
     # --- Agent Initialization ---
-    # Ego agent (agent 0) starts with clockwise heuristic.
+    # Initialize ego agent (agent 0) as RotateAgent (clockwise)
     ego_agent = RotateAgent(direction=True)
-    # ego_agent = PlateAgent()
     ego_agent.set_agent_index(0)
     ego_agent.set_mdp(mdp)
     
-    # Confederate agent (agent 1) starts with clockwise heuristic.
-    # confederate = OnionToPotAgent()
+    # Initialize confederate (agent 1) as RotateAgent (clockwise)
     confederate = RotateAgent(direction=True)
     confederate.set_agent_index(1)
     confederate.set_mdp(mdp)
@@ -90,11 +155,6 @@ def main():
     # Compose the agent pair.
     agent_pair = AgentPair(ego_agent, confederate, allow_duplicate_agents=True)
     agent_pair.set_mdp(mdp)
-
-    # Create the environment using the legacy OvercookedEnv.
-    env = OvercookedEnv(mdp, horizon=HORIZON)
-    env.reset()  
-    state = env.state  # Access initial OvercookedState.
 
     # --- Setup Pygame Display ---
     GAME_WIDTH, GAME_HEIGHT = 800, 600
@@ -132,11 +192,25 @@ def main():
                         new_heuristic = intervention.get("ego_agent_new_heuristic", None)
                         if new_heuristic:
                             if new_heuristic == "counterclockwise":
-                                # print("Intervention: Ego agent switching to counterclockwise.")
+                                print("Intervention: Ego agent switching to counterclockwise.")
                                 ego_agent.direction = False
                             elif new_heuristic == "clockwise":
-                                # print("Intervention: Ego agent switching to clockwise.")
+                                print("Intervention: Ego agent switching to clockwise.")
                                 ego_agent.direction = True
+                            elif new_heuristic == "onion_to_pot":
+                                print("Intervention: Ego agent switching to onion_to_pot.")
+                                ego_agent = OnionToPotAgent(direction=True)
+                                ego_agent.set_agent_index(0)
+                                ego_agent.set_mdp(mdp)
+                                agent_pair = AgentPair(ego_agent, confederate, allow_duplicate_agents=True)
+                                agent_pair.set_mdp(mdp)
+                            elif new_heuristic == "plate_agent":
+                                print("Intervention: Ego agent switching to plate_agent.")
+                                ego_agent = PlateAgent(direction=True)
+                                ego_agent.set_agent_index(0)
+                                ego_agent.set_mdp(mdp)
+                                agent_pair = AgentPair(ego_agent, confederate, allow_duplicate_agents=True)
+                                agent_pair.set_mdp(mdp)
                         input_text = ""
                         show_textbox = False
                     elif event.key == pygame.K_BACKSPACE:
@@ -171,32 +245,45 @@ def main():
         pygame.display.flip()
         clock.tick(fps)
 
-        # Every 10 steps, simulate that the confederate suddenly changes behavior.
+        # At some step, switch confederate from clockwise to onion_to_pot
         if step_counter == 20:
-            print("Simulation: Confederate switching...")
-            confederate.direction = False
-            # confederate = PlateAgent()
-            # confederate.set_agent_index(1)
-            # confederate.set_mdp(mdp)
-            # agent_pair = AgentPair(ego_agent, confederate, allow_duplicate_agents=True)
-            # agent_pair.set_mdp(mdp)
-            # print("Simulation: Confederate switching to Onion Only.")
-            # confederate = OnionToPotAgent()
-            # confederate.set_agent_index(1)
-            # confederate.set_mdp(mdp)
+            print("Simulation: Confederate switching from clockwise to onion_to_pot...")
+            agent_pair = switch_confederate_agent(env, ego_agent, "onion_to_pot", mdp)
+            agent_pair.set_mdp(mdp)
         # Advance simulation if not in command input mode.
         if not show_textbox:
             # Each agent returns (action, info); extract the action and convert if needed.
-            raw_joint_actions = agent_pair.joint_action(env.state)
-            joint_action = tuple(convert_action(a_info[0]) for a_info in raw_joint_actions)
-            next_state, reward, done, info = env.step(joint_action)
-            state = next_state
-            step_counter += 1
-            if done:
-                print("Episode ended. Resetting environment.")
-                env.reset()
-                state = env.state
-                step_counter = 0
+            try:
+                raw_joint_actions = agent_pair.joint_action(env.state)
+                # Handle the case where agents return tuples (action, info) or just actions
+                joint_action = []
+                for a_info in raw_joint_actions:
+                    if isinstance(a_info, tuple):
+                        action = a_info[0]  # Extract action from tuple
+                    else:
+                        action = a_info  # Action is already the value
+                    joint_action.append(convert_action(action))
+                joint_action = tuple(joint_action)
+                next_state, reward, done, info = env.step(joint_action)
+                state = next_state
+                step_counter += 1
+                if done:
+                    print(f"Episode ended at step {step_counter}. Resetting environment.")
+                    print(f"Environment timestep: {env.t}, Horizon: {env.horizon}")
+                    env.reset()
+                    state = env.state
+                    step_counter = 0
+                    # Reset agents when environment resets
+                    ego_agent.reset()
+                    confederate.reset()
+                    ego_agent.set_agent_index(0)
+                    confederate.set_agent_index(1)
+                    ego_agent.set_mdp(mdp)
+                    confederate.set_mdp(mdp)
+            except Exception as e:
+                print(f"Error during simulation step: {e}")
+                print(f"Step counter: {step_counter}")
+                break
 
 if __name__ == "__main__":
     main()
