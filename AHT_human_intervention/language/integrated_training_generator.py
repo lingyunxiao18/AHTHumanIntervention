@@ -15,7 +15,12 @@ from dataclasses import dataclass, asdict
 import numpy as np
 
 from llm_enhanced_command_generator import LLMEnhancedCommandGenerator
-from simple_state_converter import SimpleStateConverter
+# Import Overcooked components for proper state generation
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'envs', 'overcooked', 'overcooked_ai_py', 'mdp'))
+from overcooked_mdp import OvercookedGridworld, OvercookedState, PlayerState, ObjectState
+from overcooked_state_converter import create_state_converter
 
 @dataclass
 class TrainingExample:
@@ -33,10 +38,11 @@ class IntegratedTrainingGenerator:
     
     def __init__(self, 
                  command_generator: LLMEnhancedCommandGenerator,
-                 state_converter: SimpleStateConverter,
+                 overcooked_mdp: OvercookedGridworld,
                  action_space_size: int = 6):
         self.command_generator = command_generator
-        self.state_converter = state_converter
+        self.overcooked_mdp = overcooked_mdp
+        self.state_converter = create_state_converter(overcooked_mdp)
         self.action_space_size = action_space_size
         
         # Overcooked action mapping (adjust based on your environment)
@@ -71,10 +77,14 @@ class IntegratedTrainingGenerator:
             # Generate commands for each intervention type
             for intervention_type in self.command_generator.get_intervention_types():
                 for intervention_category in self.command_generator.get_intervention_categories():
-                    # Generate commands for this intervention type
-                    commands = self.command_generator.generate_intervention_command(
-                        intervention_type, intervention_category, commands_per_state
-                    )
+                    # Get commands from the framework
+                    if (intervention_type in self.command_generator.intervention_framework and 
+                        intervention_category in self.command_generator.intervention_framework[intervention_type]):
+                        intervention_obj = self.command_generator.intervention_framework[intervention_type][intervention_category]
+                        commands = intervention_obj.examples[:commands_per_state]
+                    else:
+                        # Fallback to simple commands
+                        commands = ["Complete the cooking task efficiently"]
                     
                     for command in commands:
                         # Compute reasonable action based on command and state
@@ -99,7 +109,7 @@ class IntegratedTrainingGenerator:
         self.training_data.extend(examples)
         return examples
     
-    def _generate_diverse_states(self, num_states: int) -> List[Dict]:
+    def _generate_diverse_states(self, num_states: int) -> List[OvercookedState]:
         """Generate diverse Overcooked game states for training."""
         states = []
         
@@ -108,155 +118,234 @@ class IntegratedTrainingGenerator:
             'agent_holding_ingredient',
             'agent_near_pot',
             'agent_near_counter',
-            'agent_near_stove',
             'agent_empty_hands',
             'pot_ready_to_cook',
             'pot_cooking',
-            'pot_ready_to_serve',
             'counter_with_ingredients',
             'counter_with_dishes',
-            'teammate_coordination',
-            'emergency_situation'
+            'teammate_coordination'
         ]
         
         for i in range(num_states):
             scenario = random.choice(scenarios)
-            state = self._create_scenario_state(scenario)
+            state = self._create_scenario_state(scenario, timestep=i)
             states.append(state)
         
         return states
     
-    def _create_scenario_state(self, scenario: str) -> Dict:
-        """Create a specific scenario state."""
-        base_state = {
-            'agents': [
-                {'id': 1, 'pos': (1, 1), 'holding': None, 'facing': 'UP'},
-                {'id': 2, 'pos': (2, 2), 'holding': None, 'facing': 'DOWN'}
-            ],
-            'objects': [],
-            'layout': 'random3',
-            'orders': [],
-            'time_remaining': 300
-        }
+    def _create_scenario_state(self, scenario: str, timestep: int = 0) -> OvercookedState:
+        """Create a specific scenario state using actual OvercookedState objects."""
+        # Get starting positions from the MDP
+        start_positions = self.overcooked_mdp.start_player_positions
+        
+        # Base player configurations
+        player1 = PlayerState(position=start_positions[0], orientation=(0, -1), held_object=None)
+        player2 = PlayerState(position=start_positions[1], orientation=(1, 0), held_object=None)
+        
+        # Base objects dictionary
+        objects = {}
+        
+        # Base order list
+        order_list = ["onion"]
         
         if scenario == 'agent_holding_ingredient':
-            base_state['agents'][0]['holding'] = 'onion'
-            base_state['objects'].extend([
-                {'type': 'pot', 'pos': (1, 2), 'status': 'empty'},
-                {'type': 'onion', 'pos': (0, 0), 'status': 'available'}
-            ])
+            # Player 1 is holding an onion
+            player1 = PlayerState(
+                position=start_positions[0], 
+                orientation=(0, -1),
+                held_object=ObjectState("onion", start_positions[0])
+            )
+            # Add some objects on counters
+            counter_locs = self.overcooked_mdp.get_counter_locations()
+            if len(counter_locs) >= 2:
+                objects[counter_locs[0]] = ObjectState("dish", counter_locs[0])
+                objects[counter_locs[1]] = ObjectState("onion", counter_locs[1])
             
         elif scenario == 'agent_near_pot':
-            base_state['agents'][0]['pos'] = (1, 1)
-            base_state['objects'].extend([
-                {'type': 'pot', 'pos': (1, 2), 'status': 'empty'},
-                {'type': 'onion', 'pos': (0, 0), 'status': 'available'}
-            ])
+            # Position players near pot
+            pot_locs = self.overcooked_mdp.get_pot_locations()
+            if pot_locs:
+                # Position player 1 near a pot
+                pot_pos = pot_locs[0]
+                nearby_pos = (pot_pos[0] + 1, pot_pos[1]) if pot_pos[0] + 1 < self.overcooked_mdp.shape[0] else (pot_pos[0] - 1, pot_pos[1])
+                player1 = PlayerState(position=nearby_pos, orientation=(0, -1), held_object=None)
+            
+            # Add some onions on counters
+            counter_locs = self.overcooked_mdp.get_counter_locations()
+            if counter_locs:
+                objects[counter_locs[0]] = ObjectState("onion", counter_locs[0])
             
         elif scenario == 'pot_ready_to_cook':
-            base_state['agents'][0]['holding'] = 'onion'
-            base_state['agents'][0]['pos'] = (1, 1)
-            base_state['objects'].extend([
-                {'type': 'pot', 'pos': (1, 2), 'status': 'empty'},
-                {'type': 'stove', 'pos': (1, 3), 'status': 'available'}
-            ])
+            # Player holding onion, positioned near pot
+            player1 = PlayerState(
+                position=start_positions[0], 
+                orientation=(0, -1),
+                held_object=ObjectState("onion", start_positions[0])
+            )
+            
+            # Add soup in pot (partially cooked)
+            pot_locs = self.overcooked_mdp.get_pot_locations()
+            if pot_locs:
+                objects[pot_locs[0]] = ObjectState("soup", pot_locs[0], ("onion", 2, 10))
+            
+        elif scenario == 'pot_cooking':
+            # Soup cooking in pot
+            pot_locs = self.overcooked_mdp.get_pot_locations()
+            if pot_locs:
+                objects[pot_locs[0]] = ObjectState("soup", pot_locs[0], ("onion", 3, 15))
+            
+            # Add dish on counter
+            counter_locs = self.overcooked_mdp.get_counter_locations()
+            if counter_locs:
+                objects[counter_locs[0]] = ObjectState("dish", counter_locs[0])
+            
+        elif scenario == 'counter_with_ingredients':
+            # Distribute ingredients on counters
+            counter_locs = self.overcooked_mdp.get_counter_locations()
+            if len(counter_locs) >= 2:
+                objects[counter_locs[0]] = ObjectState("onion", counter_locs[0])
+                objects[counter_locs[1]] = ObjectState("onion", counter_locs[1])
+            
+        elif scenario == 'counter_with_dishes':
+            # Distribute dishes on counters
+            counter_locs = self.overcooked_mdp.get_counter_locations()
+            if len(counter_locs) >= 2:
+                objects[counter_locs[0]] = ObjectState("dish", counter_locs[0])
+                objects[counter_locs[1]] = ObjectState("dish", counter_locs[1])
             
         elif scenario == 'teammate_coordination':
-            base_state['agents'][0]['pos'] = (0, 1)
-            base_state['agents'][1]['pos'] = (2, 1)
-            base_state['agents'][0]['holding'] = 'onion'
-            base_state['agents'][1]['holding'] = 'dish'
-            base_state['objects'].extend([
-                {'type': 'pot', 'pos': (1, 1), 'status': 'cooking'},
-                {'type': 'counter', 'pos': (1, 0), 'status': 'available'}
-            ])
+            # Player 1 holding onion, Player 2 holding dish
+            player1 = PlayerState(
+                position=start_positions[0], 
+                orientation=(0, -1),
+                held_object=ObjectState("onion", start_positions[0])
+            )
+            player2 = PlayerState(
+                position=start_positions[1], 
+                orientation=(1, 0),
+                held_object=ObjectState("dish", start_positions[1])
+            )
             
-        elif scenario == 'emergency_situation':
-            base_state['objects'].extend([
-                {'type': 'pot', 'pos': (1, 2), 'status': 'burning'},
-                {'type': 'fire', 'pos': (1, 2), 'status': 'active'}
-            ])
+            # Add cooking soup in pot
+            pot_locs = self.overcooked_mdp.get_pot_locations()
+            if pot_locs:
+                objects[pot_locs[0]] = ObjectState("soup", pot_locs[0], ("onion", 3, 18))
         
-        return base_state
+        # Create and return the OvercookedState
+        return OvercookedState(
+            players=[player1, player2],
+            objects=objects,
+            order_list=order_list,
+            timestep=timestep
+        )
     
-    def _compute_reasonable_action(self, command: str, state: Dict) -> int:
+    def _compute_reasonable_action(self, command: str, state: OvercookedState) -> int:
         """Compute a reasonable action based on the command and state."""
         command_lower = command.lower()
         
         # Extract agent and object information
-        agent = state['agents'][0]  # Focus on first agent
-        agent_pos = agent['pos']
-        agent_holding = agent.get('holding')
+        agent = state.players[0]  # Focus on first agent
+        agent_pos = agent.position
+        agent_holding = agent.held_object.name if agent.held_object else None
         
         # Find relevant objects
-        pot_pos = None
-        onion_pos = None
-        counter_pos = None
-        stove_pos = None
+        pot_positions = self.overcooked_mdp.get_pot_locations()
+        counter_positions = self.overcooked_mdp.get_counter_locations()
+        onion_dispenser_positions = self.overcooked_mdp.get_onion_dispenser_locations()
+        dish_dispenser_positions = self.overcooked_mdp.get_dish_dispenser_locations()
+        serving_positions = self.overcooked_mdp.get_serving_locations()
         
-        for obj in state['objects']:
-            if obj['type'] == 'pot':
-                pot_pos = obj['pos']
-            elif obj['type'] == 'onion':
-                onion_pos = obj['pos']
-            elif obj['type'] == 'counter':
-                counter_pos = obj['pos']
-            elif obj['type'] == 'stove':
-                stove_pos = obj['pos']
+        # Find objects in the state
+        onion_positions = []
+        dish_positions = []
+        soup_positions = []
+        
+        for pos, obj in state.objects.items():
+            if obj.name == 'onion':
+                onion_positions.append(pos)
+            elif obj.name == 'dish':
+                dish_positions.append(pos)
+            elif obj.name == 'soup':
+                soup_positions.append(pos)
         
         # Action logic based on command content
         if any(word in command_lower for word in ['go', 'move', 'head', 'navigate']):
-            if 'onion' in command_lower and onion_pos:
-                return self._get_movement_action(agent_pos, onion_pos)
-            elif 'pot' in command_lower and pot_pos:
-                return self._get_movement_action(agent_pos, pot_pos)
-            elif 'counter' in command_lower and counter_pos:
-                return self._get_movement_action(agent_pos, counter_pos)
-            elif 'stove' in command_lower and stove_pos:
-                return self._get_movement_action(agent_pos, stove_pos)
+            if 'onion' in command_lower:
+                # Go to onion (dispenser or on counter)
+                if onion_positions:
+                    return self._get_movement_action(agent_pos, onion_positions[0])
+                elif onion_dispenser_positions:
+                    return self._get_movement_action(agent_pos, onion_dispenser_positions[0])
+            elif 'pot' in command_lower and pot_positions:
+                return self._get_movement_action(agent_pos, pot_positions[0])
+            elif 'counter' in command_lower and counter_positions:
+                return self._get_movement_action(agent_pos, counter_positions[0])
+            elif 'dish' in command_lower:
+                if dish_positions:
+                    return self._get_movement_action(agent_pos, dish_positions[0])
+                elif dish_dispenser_positions:
+                    return self._get_movement_action(agent_pos, dish_dispenser_positions[0])
             else:
                 # Random movement
                 return random.choice([1, 2, 3, 4])  # UP, DOWN, LEFT, RIGHT
                 
         elif any(word in command_lower for word in ['pick', 'grab', 'take', 'get']):
-            if 'onion' in command_lower and onion_pos:
-                # Move to onion first, then interact
-                if self._is_adjacent(agent_pos, onion_pos):
-                    return self.action_mapping['INTERACT']
-                else:
-                    return self._get_movement_action(agent_pos, onion_pos)
+            if 'onion' in command_lower:
+                target_pos = None
+                if onion_positions:
+                    target_pos = onion_positions[0]
+                elif onion_dispenser_positions:
+                    target_pos = onion_dispenser_positions[0]
+                
+                if target_pos:
+                    if self._is_adjacent(agent_pos, target_pos):
+                        return self.action_mapping['INTERACT']
+                    else:
+                        return self._get_movement_action(agent_pos, target_pos)
+            elif 'dish' in command_lower:
+                target_pos = None
+                if dish_positions:
+                    target_pos = dish_positions[0]
+                elif dish_dispenser_positions:
+                    target_pos = dish_dispenser_positions[0]
+                
+                if target_pos:
+                    if self._is_adjacent(agent_pos, target_pos):
+                        return self.action_mapping['INTERACT']
+                    else:
+                        return self._get_movement_action(agent_pos, target_pos)
             else:
                 return random.choice([1, 2, 3, 4])  # Random movement
                 
         elif any(word in command_lower for word in ['put', 'drop', 'place', 'add']):
-            if 'pot' in command_lower and pot_pos and agent_holding:
-                if self._is_adjacent(agent_pos, pot_pos):
+            if 'pot' in command_lower and pot_positions and agent_holding:
+                if self._is_adjacent(agent_pos, pot_positions[0]):
                     return self.action_mapping['INTERACT']
                 else:
-                    return self._get_movement_action(agent_pos, pot_pos)
-            elif 'counter' in command_lower and counter_pos and agent_holding:
-                if self._is_adjacent(agent_pos, counter_pos):
+                    return self._get_movement_action(agent_pos, pot_positions[0])
+            elif 'counter' in command_lower and counter_positions and agent_holding:
+                if self._is_adjacent(agent_pos, counter_positions[0]):
                     return self.action_mapping['INTERACT']
                 else:
-                    return self._get_movement_action(agent_pos, counter_pos)
+                    return self._get_movement_action(agent_pos, counter_positions[0])
             else:
                 return random.choice([1, 2, 3, 4])  # Random movement
                 
         elif any(word in command_lower for word in ['cook', 'prepare', 'process']):
-            if pot_pos and agent_holding:
-                if self._is_adjacent(agent_pos, pot_pos):
+            if pot_positions and agent_holding:
+                if self._is_adjacent(agent_pos, pot_positions[0]):
                     return self.action_mapping['INTERACT']
                 else:
-                    return self._get_movement_action(agent_pos, pot_pos)
+                    return self._get_movement_action(agent_pos, pot_positions[0])
             else:
                 return random.choice([1, 2, 3, 4])  # Random movement
                 
         elif any(word in command_lower for word in ['serve', 'deliver', 'bring']):
-            if counter_pos and agent_holding:
-                if self._is_adjacent(agent_pos, counter_pos):
+            if serving_positions and agent_holding:
+                if self._is_adjacent(agent_pos, serving_positions[0]):
                     return self.action_mapping['INTERACT']
                 else:
-                    return self._get_movement_action(agent_pos, counter_pos)
+                    return self._get_movement_action(agent_pos, serving_positions[0])
             else:
                 return random.choice([1, 2, 3, 4])  # Random movement
                 
@@ -288,29 +377,40 @@ class IntegratedTrainingGenerator:
         """Check if two positions are adjacent."""
         return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1]) == 1
     
-    def _extract_state_features(self, state: Dict) -> List[float]:
+    def _extract_state_features(self, state: OvercookedState) -> List[float]:
         """Extract numerical features from state for potential use."""
         features = []
         
-        # Agent positions
-        for agent in state['agents']:
-            features.extend([float(agent['pos'][0]), float(agent['pos'][1])])
-            features.append(1.0 if agent['holding'] else 0.0)
+        # Agent positions and held objects
+        for player in state.players:
+            features.extend([float(player.position[0]), float(player.position[1])])
+            features.append(1.0 if player.held_object else 0.0)
         
         # Object counts by type
-        object_counts = {}
-        for obj in state['objects']:
-            obj_type = obj['type']
-            object_counts[obj_type] = object_counts.get(obj_type, 0) + 1
+        object_counts = {'onion': 0, 'dish': 0, 'soup': 0}
+        for obj in state.objects.values():
+            if obj.name in object_counts:
+                object_counts[obj.name] += 1
         
         # Add object counts to features
-        for obj_type in ['onion', 'pot', 'counter', 'stove', 'dish']:
-            features.append(float(object_counts.get(obj_type, 0)))
+        for obj_type in ['onion', 'dish', 'soup']:
+            features.append(float(object_counts[obj_type]))
         
-        # Time remaining (normalized)
-        features.append(float(state.get('time_remaining', 300)) / 300.0)
+        # Layout features (static)
+        features.append(float(len(self.overcooked_mdp.get_pot_locations())))
+        features.append(float(len(self.overcooked_mdp.get_counter_locations())))
+        features.append(float(len(self.overcooked_mdp.get_onion_dispenser_locations())))
+        features.append(float(len(self.overcooked_mdp.get_dish_dispenser_locations())))
+        features.append(float(len(self.overcooked_mdp.get_serving_locations())))
         
-        return features
+        # Timestep (normalized)
+        features.append(float(state.timestep) / 400.0)
+        
+        # Pad features to ensure consistent size (20 features)
+        while len(features) < 20:
+            features.append(0.0)
+        
+        return features[:20]  # Ensure exactly 20 features
     
     def generate_balanced_dataset(self, 
                                  examples_per_category: int = 50,
@@ -318,22 +418,15 @@ class IntegratedTrainingGenerator:
         """Generate a balanced dataset across intervention types."""
         if balance_interventions:
             # Generate equal numbers for each intervention type
-            total_examples = examples_per_category * 9  # 3x3 framework
             examples = []
             
             for intervention_type in self.command_generator.get_intervention_types():
                 for intervention_category in self.command_generator.get_intervention_categories():
-                    category_examples = self.generate_state_command_pairs(
-                        num_states=examples_per_category,
-                        commands_per_state=1
+                    # Generate specific examples for this category
+                    category_examples = self._generate_category_specific_examples(
+                        intervention_type, intervention_category, examples_per_category
                     )
-                    # Filter for this specific category
-                    filtered_examples = [
-                        ex for ex in category_examples 
-                        if ex.intervention_type == intervention_type and 
-                           ex.intervention_category == intervention_category
-                    ]
-                    examples.extend(filtered_examples[:examples_per_category])
+                    examples.extend(category_examples)
             
             return examples
         else:
@@ -342,6 +435,50 @@ class IntegratedTrainingGenerator:
                 num_states=examples_per_category * 9,
                 commands_per_state=1
             )
+    
+    def _generate_category_specific_examples(self, intervention_type: str, intervention_category: str, 
+                                           num_examples: int) -> List[TrainingExample]:
+        """Generate examples for a specific intervention type and category."""
+        examples = []
+        
+        # Get commands for this specific category
+        if (intervention_type in self.command_generator.intervention_framework and 
+            intervention_category in self.command_generator.intervention_framework[intervention_type]):
+            intervention_obj = self.command_generator.intervention_framework[intervention_type][intervention_category]
+            available_commands = intervention_obj.examples
+        else:
+            available_commands = ["Complete the cooking task efficiently"]
+        
+        # Generate diverse states
+        states = self._generate_diverse_states(num_examples)
+        
+        for i, state in enumerate(states):
+            # Convert state to text
+            state_text = self.state_converter.state_to_text(state)
+            
+            # Pick a command (cycle through available commands)
+            command = available_commands[i % len(available_commands)]
+            
+            # Compute action
+            action = self._compute_reasonable_action(command, state)
+            
+            # Create training example
+            example = TrainingExample(
+                state_text=state_text,
+                command=command,
+                action=action,
+                intervention_type=intervention_type,
+                intervention_category=intervention_category,
+                state_features=self._extract_state_features(state),
+                metadata={
+                    'state_id': id(state),
+                    'command_length': len(command),
+                    'action_name': self.action_names.get(action, 'UNKNOWN')
+                }
+            )
+            examples.append(example)
+        
+        return examples
     
     def save_training_data(self, filename: str, format: str = 'json'):
         """Save training data to file."""
@@ -405,8 +542,14 @@ def main():
     
     # Initialize components
     command_generator = LLMEnhancedCommandGenerator()
-    state_converter = SimpleStateConverter()
-    training_generator = IntegratedTrainingGenerator(command_generator, state_converter)
+    
+    # Create Overcooked MDP
+    print("Creating Overcooked MDP...")
+    overcooked_mdp = OvercookedGridworld.from_layout_name("simple")
+    print(f"Using layout: {overcooked_mdp.layout_name}")
+    print(f"Grid shape: {overcooked_mdp.shape}")
+    
+    training_generator = IntegratedTrainingGenerator(command_generator, overcooked_mdp)
     
     # Generate balanced dataset
     print("Generating balanced training dataset...")

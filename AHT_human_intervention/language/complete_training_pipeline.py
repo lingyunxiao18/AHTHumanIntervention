@@ -19,9 +19,13 @@ import random
 
 from integrated_training_generator import IntegratedTrainingGenerator, TrainingExample
 from language_conditioned_policy import HuggingFaceLangConditionedPolicy
-from command_generator import CommandGenerator
-from simple_state_converter import SimpleStateConverter
+from llm_enhanced_command_generator import LLMEnhancedCommandGenerator
 from rl_finetuning import RLFineTuner, LLMInstructionEvaluator
+# Import Overcooked components
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'envs', 'overcooked', 'overcooked_ai_py', 'mdp'))
+from overcooked_mdp import OvercookedGridworld
 
 class CompleteTrainingPipeline:
     """Complete training pipeline combining supervised learning and RL fine-tuning."""
@@ -33,10 +37,12 @@ class CompleteTrainingPipeline:
         self.openai_api_key = openai_api_key
         
         # Initialize components
-        self.command_generator = CommandGenerator()
-        self.state_converter = SimpleStateConverter()
+        self.command_generator = LLMEnhancedCommandGenerator()
+        
+        # Create Overcooked MDP for state generation
+        self.overcooked_mdp = OvercookedGridworld.from_layout_name("simple")
         self.training_generator = IntegratedTrainingGenerator(
-            self.command_generator, self.state_converter
+            self.command_generator, self.overcooked_mdp
         )
         
         # Initialize tokenizer
