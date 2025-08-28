@@ -17,9 +17,9 @@ import os
 from tqdm import tqdm
 import random
 
-from integrated_training_generator import IntegratedTrainingGenerator, TrainingExample
+from enhanced_training_generator import EnhancedTrainingGenerator, TrainingExample
 from language_conditioned_policy import HuggingFaceLangConditionedPolicy
-from llm_enhanced_command_generator import LLMEnhancedCommandGenerator
+from enhanced_llm_command_generator import EnhancedLLMCommandGenerator
 from rl_finetuning import RLFineTuner, LLMInstructionEvaluator
 # Import Overcooked components
 import sys
@@ -37,11 +37,11 @@ class CompleteTrainingPipeline:
         self.openai_api_key = openai_api_key
         
         # Initialize components
-        self.command_generator = LLMEnhancedCommandGenerator()
+        self.command_generator = EnhancedLLMCommandGenerator()
         
         # Create Overcooked MDP for state generation
         self.overcooked_mdp = OvercookedGridworld.from_layout_name("simple")
-        self.training_generator = IntegratedTrainingGenerator(
+        self.training_generator = EnhancedTrainingGenerator(
             self.command_generator, self.overcooked_mdp
         )
         

@@ -1,0 +1,834 @@
+[
+  {
+    "state_text": "The kitchen layout is 'random3' with grid size (8, 5). Player 0 is at coordinates (3, 3), facing south (down), and holding a onion. Player 1 is at coordinates (3, 1), facing east (right), and holding a onion. Objects: 2 onion soup at (4, 0) - cooking 10 steps. Kitchen features: pots at (3, 0), (4, 0), counters at (0, 0), (1, 0), (2, 0), (5, 0), (6, 0), (7, 0), (0, 1), (7, 1), (2, 2), (3, 2), (4, 2), (5, 2), (0, 3), (7, 3), (0, 4), (1, 4), (2, 4), (5, 4), (6, 4), (7, 4), onion dispensers at (3, 4), (4, 4), dish dispensers at (0, 2), serving areas at (7, 2). Active orders: onion. Current timestep: 0.",
+    "command": "Make sure to put the chopped onions in the pots for cooking.",
+    "action": 0,
+    "intervention_type": "agent_performance_correction",
+    "intervention_category": "factual_information",
+    "standardized_intervention": {
+      "intervention_type": "direct_command",
+      "trigger": "agent_performance",
+      "macro_actions": [
+        {
+          "action_type": "movement",
+          "target": "(4, 0)",
+          "description": "Move to the pot at position (4, 0) to put chopped onions in it for cooking",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "pot at (4, 0)",
+          "description": "Place chopped onions into the pot for cooking",
+          "priority": 1
+        }
+      ],
+      "urgency": "normal",
+      "context": "Ensure onions are placed in the pot for cooking as per the instruction"
+    },
+    "macro_actions": [
+      {
+        "action_type": "movement",
+        "target": "(4, 0)",
+        "description": "Move to the pot at position (4, 0) to put chopped onions in it for cooking",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "pot at (4, 0)",
+        "description": "Place chopped onions into the pot for cooking",
+        "priority": 1
+      }
+    ],
+    "state_features": [
+      3.0,
+      3.0,
+      1.0,
+      3.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "metadata": null
+  },
+  {
+    "state_text": "The kitchen layout is 'random3' with grid size (8, 5). Player 0 is at coordinates (3, 3), facing west (left), and holding a onion. Player 1 is at coordinates (3, 1), facing north (up), and holding a dish. Objects: 2 onion soup at (3, 0) - cooking 10 steps. Kitchen features: pots at (3, 0), (4, 0), counters at (0, 0), (1, 0), (2, 0), (5, 0), (6, 0), (7, 0), (0, 1), (7, 1), (2, 2), (3, 2), (4, 2), (5, 2), (0, 3), (7, 3), (0, 4), (1, 4), (2, 4), (5, 4), (6, 4), (7, 4), onion dispensers at (3, 4), (4, 4), dish dispensers at (0, 2), serving areas at (7, 2). Active orders: onion. Current timestep: 0.",
+    "command": "Make sure to put the chopped onions into the pot to start cooking the soup.",
+    "action": 2,
+    "intervention_type": "agent_performance_correction",
+    "intervention_category": "factual_information",
+    "standardized_intervention": {
+      "intervention_type": "direct_command",
+      "trigger": "teammate_coordination",
+      "macro_actions": [
+        {
+          "action_type": "movement",
+          "target": "onion dispenser",
+          "description": "Move Player 0 to the onion dispenser to pick up chopped onions",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "onion",
+          "description": "Pick up chopped onions from the dispenser",
+          "priority": 1
+        },
+        {
+          "action_type": "movement",
+          "target": "pot",
+          "description": "Move Player 0 to the pot to put the onions inside",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "pot",
+          "description": "Put chopped onions into the pot to start cooking the soup",
+          "priority": 1
+        }
+      ],
+      "urgency": "urgent",
+      "context": "Ensure the onions are added to the pot to start cooking the onion soup as per the command."
+    },
+    "macro_actions": [
+      {
+        "action_type": "movement",
+        "target": "onion dispenser",
+        "description": "Move Player 0 to the onion dispenser to pick up chopped onions",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "onion",
+        "description": "Pick up chopped onions from the dispenser",
+        "priority": 1
+      },
+      {
+        "action_type": "movement",
+        "target": "pot",
+        "description": "Move Player 0 to the pot to put the onions inside",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "pot",
+        "description": "Put chopped onions into the pot to start cooking the soup",
+        "priority": 1
+      }
+    ],
+    "state_features": [
+      3.0,
+      3.0,
+      1.0,
+      3.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "metadata": null
+  },
+  {
+    "state_text": "The kitchen layout is 'random3' with grid size (8, 5). Player 0 is at coordinates (3, 1), facing east (right), and not holding anything. Player 1 is at coordinates (3, 1), facing north (up), and not holding anything. Kitchen features: pots at (3, 0), (4, 0), counters at (0, 0), (1, 0), (2, 0), (5, 0), (6, 0), (7, 0), (0, 1), (7, 1), (2, 2), (3, 2), (4, 2), (5, 2), (0, 3), (7, 3), (0, 4), (1, 4), (2, 4), (5, 4), (6, 4), (7, 4), onion dispensers at (3, 4), (4, 4), dish dispensers at (0, 2), serving areas at (7, 2). Active orders: onion. Current timestep: 0.",
+    "command": "Make sure to check the cooking state and serve the soup when it's ready.",
+    "action": 0,
+    "intervention_type": "agent_performance_correction",
+    "intervention_category": "factual_information",
+    "standardized_intervention": {
+      "intervention_type": "general_instruction",
+      "trigger": "agent_performance",
+      "macro_actions": [
+        {
+          "action_type": "environmental_update",
+          "target": "cooking state",
+          "description": "Check the current cooking status of the soup",
+          "priority": 1
+        },
+        {
+          "action_type": "environmental_update",
+          "target": "serving area",
+          "description": "Prepare to serve the soup when ready",
+          "priority": 1
+        }
+      ],
+      "urgency": "normal",
+      "context": "Ensure the AI checks the cooking progress and serves the soup promptly when ready"
+    },
+    "macro_actions": [
+      {
+        "action_type": "environmental_update",
+        "target": "cooking state",
+        "description": "Check the current cooking status of the soup",
+        "priority": 1
+      },
+      {
+        "action_type": "environmental_update",
+        "target": "serving area",
+        "description": "Prepare to serve the soup when ready",
+        "priority": 1
+      }
+    ],
+    "state_features": [
+      3.0,
+      1.0,
+      0.0,
+      3.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "metadata": null
+  },
+  {
+    "state_text": "The kitchen layout is 'random3' with grid size (8, 5). Player 0 is at coordinates (3, 1), facing east (right), and not holding anything. Player 1 is at coordinates (3, 1), facing south (down), and not holding anything. Kitchen features: pots at (3, 0), (4, 0), counters at (0, 0), (1, 0), (2, 0), (5, 0), (6, 0), (7, 0), (0, 1), (7, 1), (2, 2), (3, 2), (4, 2), (5, 2), (0, 3), (7, 3), (0, 4), (1, 4), (2, 4), (5, 4), (6, 4), (7, 4), onion dispensers at (3, 4), (4, 4), dish dispensers at (0, 2), serving areas at (7, 2). Active orders: onion. Current timestep: 0.",
+    "command": "Make sure to put the chopped onion into the pot to start cooking the soup.",
+    "action": 3,
+    "intervention_type": "agent_performance_correction",
+    "intervention_category": "factual_information",
+    "standardized_intervention": {
+      "intervention_type": "direct_command",
+      "trigger": "agent_performance",
+      "macro_actions": [
+        {
+          "action_type": "movement",
+          "target": "onion dispenser",
+          "description": "Move to the onion dispenser to pick up a chopped onion",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "onion",
+          "description": "Pick up the chopped onion",
+          "priority": 1
+        },
+        {
+          "action_type": "movement",
+          "target": "pot",
+          "description": "Move to the pot to place the chopped onion inside",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "pot",
+          "description": "Put the chopped onion into the pot to start cooking",
+          "priority": 1
+        }
+      ],
+      "urgency": "urgent",
+      "context": "Player needs to ensure the chopped onion is placed into the pot to begin cooking the soup."
+    },
+    "macro_actions": [
+      {
+        "action_type": "movement",
+        "target": "onion dispenser",
+        "description": "Move to the onion dispenser to pick up a chopped onion",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "onion",
+        "description": "Pick up the chopped onion",
+        "priority": 1
+      },
+      {
+        "action_type": "movement",
+        "target": "pot",
+        "description": "Move to the pot to place the chopped onion inside",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "pot",
+        "description": "Put the chopped onion into the pot to start cooking",
+        "priority": 1
+      }
+    ],
+    "state_features": [
+      3.0,
+      1.0,
+      0.0,
+      3.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "metadata": null
+  },
+  {
+    "state_text": "The kitchen layout is 'random3' with grid size (8, 5). Player 0 is at coordinates (3, 3), facing west (left), and holding a onion. Player 1 is at coordinates (3, 1), facing east (right), and not holding anything. Objects: 2 onion soup at (4, 0) - cooking 10 steps. Kitchen features: pots at (3, 0), (4, 0), counters at (0, 0), (1, 0), (2, 0), (5, 0), (6, 0), (7, 0), (0, 1), (7, 1), (2, 2), (3, 2), (4, 2), (5, 2), (0, 3), (7, 3), (0, 4), (1, 4), (2, 4), (5, 4), (6, 4), (7, 4), onion dispensers at (3, 4), (4, 4), dish dispensers at (0, 2), serving areas at (7, 2). Active orders: onion. Current timestep: 0.",
+    "command": "Make sure to put the chopped onions into the pot to start the soup mix.",
+    "action": 2,
+    "intervention_type": "agent_performance_correction",
+    "intervention_category": "factual_information",
+    "standardized_intervention": {
+      "intervention_type": "direct_command",
+      "trigger": "teammate_coordination",
+      "macro_actions": [
+        {
+          "action_type": "movement",
+          "target": "(4, 0)",
+          "description": "Move Player 0 to the onion at (4, 0) to chop",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "onion",
+          "description": "Pick up onion to chop",
+          "priority": 1
+        },
+        {
+          "action_type": "movement",
+          "target": "pot",
+          "description": "Move Player 0 with chopped onion to the pot at its location",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "pot",
+          "description": "Put chopped onion into the pot to start the soup",
+          "priority": 1
+        }
+      ],
+      "urgency": "urgent",
+      "context": "Ensure onions are chopped and added to the pot to start the onion soup as per the command."
+    },
+    "macro_actions": [
+      {
+        "action_type": "movement",
+        "target": "(4, 0)",
+        "description": "Move Player 0 to the onion at (4, 0) to chop",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "onion",
+        "description": "Pick up onion to chop",
+        "priority": 1
+      },
+      {
+        "action_type": "movement",
+        "target": "pot",
+        "description": "Move Player 0 with chopped onion to the pot at its location",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "pot",
+        "description": "Put chopped onion into the pot to start the soup",
+        "priority": 1
+      }
+    ],
+    "state_features": [
+      3.0,
+      3.0,
+      1.0,
+      3.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "metadata": null
+  },
+  {
+    "state_text": "The kitchen layout is 'random3' with grid size (8, 5). Player 0 is at coordinates (3, 3), facing west (left), and holding a onion. Player 1 is at coordinates (3, 1), facing east (right), and not holding anything. Kitchen features: pots at (3, 0), (4, 0), counters at (0, 0), (1, 0), (2, 0), (5, 0), (6, 0), (7, 0), (0, 1), (7, 1), (2, 2), (3, 2), (4, 2), (5, 2), (0, 3), (7, 3), (0, 4), (1, 4), (2, 4), (5, 4), (6, 4), (7, 4), onion dispensers at (3, 4), (4, 4), dish dispensers at (0, 2), serving areas at (7, 2). Active orders: onion. Current timestep: 0.",
+    "command": "Make sure to put the chopped onions in the pot to start making the soup.",
+    "action": 2,
+    "intervention_type": "agent_performance_correction",
+    "intervention_category": "factual_information",
+    "standardized_intervention": {
+      "intervention_type": "direct_command",
+      "trigger": "teammate_coordination",
+      "macro_actions": [
+        {
+          "action_type": "movement",
+          "target": "onion dispenser",
+          "description": "Move Player 0 to the onion dispenser to pick up chopped onions",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "onion dispenser",
+          "description": "Pick up chopped onions from the onion dispenser",
+          "priority": 1
+        },
+        {
+          "action_type": "movement",
+          "target": "pot",
+          "description": "Move Player 0 to the pot to put the chopped onions inside",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "pot",
+          "description": "Put chopped onions into the pot to start making the soup",
+          "priority": 1
+        }
+      ],
+      "urgency": "urgent",
+      "context": "Ensure the chopped onions are placed in the pot to begin cooking the soup as per the order."
+    },
+    "macro_actions": [
+      {
+        "action_type": "movement",
+        "target": "onion dispenser",
+        "description": "Move Player 0 to the onion dispenser to pick up chopped onions",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "onion dispenser",
+        "description": "Pick up chopped onions from the onion dispenser",
+        "priority": 1
+      },
+      {
+        "action_type": "movement",
+        "target": "pot",
+        "description": "Move Player 0 to the pot to put the chopped onions inside",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "pot",
+        "description": "Put chopped onions into the pot to start making the soup",
+        "priority": 1
+      }
+    ],
+    "state_features": [
+      3.0,
+      3.0,
+      1.0,
+      3.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "metadata": null
+  },
+  {
+    "state_text": "The kitchen layout is 'random3' with grid size (8, 5). Player 0 is at coordinates (3, 3), facing south (down), and holding a dish. Player 1 is at coordinates (3, 1), facing south (down), and holding a onion. Objects: 3 onion soup at (3, 0) - cooking 20 steps. Kitchen features: pots at (3, 0), (4, 0), counters at (0, 0), (1, 0), (2, 0), (5, 0), (6, 0), (7, 0), (0, 1), (7, 1), (2, 2), (3, 2), (4, 2), (5, 2), (0, 3), (7, 3), (0, 4), (1, 4), (2, 4), (5, 4), (6, 4), (7, 4), onion dispensers at (3, 4), (4, 4), dish dispensers at (0, 2), serving areas at (7, 2). Active orders: onion. Current timestep: 0.",
+    "command": "Make sure to serve the soup with a dish after picking it up from the dispenser.",
+    "action": 3,
+    "intervention_type": "agent_performance_correction",
+    "intervention_category": "factual_information",
+    "standardized_intervention": {
+      "intervention_type": "direct_command",
+      "trigger": "agent_performance",
+      "macro_actions": [
+        {
+          "action_type": "movement",
+          "target": "dish dispenser",
+          "description": "Move to the dish dispenser to pick up a dish",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "dish",
+          "description": "Pick up a dish from the dispenser",
+          "priority": 1
+        },
+        {
+          "action_type": "movement",
+          "target": "onion soup",
+          "description": "Move to the onion soup at (3, 0)",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "onion soup",
+          "description": "Pick up the onion soup from the cooking area",
+          "priority": 1
+        },
+        {
+          "action_type": "movement",
+          "target": "serving area",
+          "description": "Move to the serving area to serve the dish with the soup",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "dish",
+          "description": "Place the onion soup on the dish and serve",
+          "priority": 1
+        }
+      ],
+      "urgency": "urgent",
+      "context": "Ensure the soup is served with a dish after picking it up from the dispenser as instructed."
+    },
+    "macro_actions": [
+      {
+        "action_type": "movement",
+        "target": "dish dispenser",
+        "description": "Move to the dish dispenser to pick up a dish",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "dish",
+        "description": "Pick up a dish from the dispenser",
+        "priority": 1
+      },
+      {
+        "action_type": "movement",
+        "target": "onion soup",
+        "description": "Move to the onion soup at (3, 0)",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "onion soup",
+        "description": "Pick up the onion soup from the cooking area",
+        "priority": 1
+      },
+      {
+        "action_type": "movement",
+        "target": "serving area",
+        "description": "Move to the serving area to serve the dish with the soup",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "dish",
+        "description": "Place the onion soup on the dish and serve",
+        "priority": 1
+      }
+    ],
+    "state_features": [
+      3.0,
+      3.0,
+      1.0,
+      3.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "metadata": null
+  },
+  {
+    "state_text": "The kitchen layout is 'random3' with grid size (8, 5). Player 0 is at coordinates (3, 3), facing south (down), and holding a onion. Player 1 is at coordinates (3, 1), facing south (down), and holding a onion. Kitchen features: pots at (3, 0), (4, 0), counters at (0, 0), (1, 0), (2, 0), (5, 0), (6, 0), (7, 0), (0, 1), (7, 1), (2, 2), (3, 2), (4, 2), (5, 2), (0, 3), (7, 3), (0, 4), (1, 4), (2, 4), (5, 4), (6, 4), (7, 4), onion dispensers at (3, 4), (4, 4), dish dispensers at (0, 2), serving areas at (7, 2). Active orders: onion. Current timestep: 0.",
+    "command": "Make sure to put the chopped onions in the pot to start cooking the soup.",
+    "action": 2,
+    "intervention_type": "agent_performance_correction",
+    "intervention_category": "factual_information",
+    "standardized_intervention": {
+      "intervention_type": "direct_command",
+      "trigger": "agent_performance",
+      "macro_actions": [
+        {
+          "action_type": "movement",
+          "target": "onion dispenser",
+          "description": "Move to the onion dispenser to pick up chopped onions",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "pot",
+          "description": "Put chopped onions into the pot to start cooking",
+          "priority": 1
+        }
+      ],
+      "urgency": "urgent",
+      "context": "Ensure the chopped onions are added to the pot to begin cooking the soup as per the order."
+    },
+    "macro_actions": [
+      {
+        "action_type": "movement",
+        "target": "onion dispenser",
+        "description": "Move to the onion dispenser to pick up chopped onions",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "pot",
+        "description": "Put chopped onions into the pot to start cooking",
+        "priority": 1
+      }
+    ],
+    "state_features": [
+      3.0,
+      3.0,
+      1.0,
+      3.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "metadata": null
+  },
+  {
+    "state_text": "The kitchen layout is 'random3' with grid size (8, 5). Player 0 is at coordinates (3, 3), facing east (right), and not holding anything. Player 1 is at coordinates (3, 1), facing south (down), and not holding anything. Objects: 3 onion soup at (3, 0) - cooking 15 steps. Kitchen features: pots at (3, 0), (4, 0), counters at (0, 0), (1, 0), (2, 0), (5, 0), (6, 0), (7, 0), (0, 1), (7, 1), (2, 2), (3, 2), (4, 2), (5, 2), (0, 3), (7, 3), (0, 4), (1, 4), (2, 4), (5, 4), (6, 4), (7, 4), onion dispensers at (3, 4), (4, 4), dish dispensers at (0, 2), serving areas at (7, 2). Active orders: onion. Current timestep: 0.",
+    "command": "Make sure to put the chopped onions into the pot for the soup",
+    "action": 0,
+    "intervention_type": "agent_performance_correction",
+    "intervention_category": "factual_information",
+    "standardized_intervention": {
+      "intervention_type": "direct_command",
+      "trigger": "agent_performance",
+      "macro_actions": [
+        {
+          "action_type": "movement",
+          "target": "(3, 2)",
+          "description": "Move Player 0 to the chopped onions area (assuming onions are chopped here) or near the onion dispenser",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "onion dispenser",
+          "description": "Pick up chopped onions from the onion dispenser",
+          "priority": 1
+        },
+        {
+          "action_type": "movement",
+          "target": "(3, 3)",
+          "description": "Move Player 0 to the pot",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "pot",
+          "description": "Put chopped onions into the pot for the soup",
+          "priority": 1
+        }
+      ],
+      "urgency": "normal",
+      "context": "Ensure the chopped onions are added to the cooking pot to progress the onion soup order"
+    },
+    "macro_actions": [
+      {
+        "action_type": "movement",
+        "target": "(3, 2)",
+        "description": "Move Player 0 to the chopped onions area (assuming onions are chopped here) or near the onion dispenser",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "onion dispenser",
+        "description": "Pick up chopped onions from the onion dispenser",
+        "priority": 1
+      },
+      {
+        "action_type": "movement",
+        "target": "(3, 3)",
+        "description": "Move Player 0 to the pot",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "pot",
+        "description": "Put chopped onions into the pot for the soup",
+        "priority": 1
+      }
+    ],
+    "state_features": [
+      3.0,
+      3.0,
+      0.0,
+      3.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "metadata": null
+  },
+  {
+    "state_text": "The kitchen layout is 'random3' with grid size (8, 5). Player 0 is at coordinates (3, 3), facing east (right), and holding a onion. Player 1 is at coordinates (3, 1), facing west (left), and holding a onion. Objects: 2 onion soup at (3, 0) - cooking 10 steps. Kitchen features: pots at (3, 0), (4, 0), counters at (0, 0), (1, 0), (2, 0), (5, 0), (6, 0), (7, 0), (0, 1), (7, 1), (2, 2), (3, 2), (4, 2), (5, 2), (0, 3), (7, 3), (0, 4), (1, 4), (2, 4), (5, 4), (6, 4), (7, 4), onion dispensers at (3, 4), (4, 4), dish dispensers at (0, 2), serving areas at (7, 2). Active orders: onion. Current timestep: 0.",
+    "command": "Make sure to pick up an onion and add it to one of the pots to start cooking soup.",
+    "action": 0,
+    "intervention_type": "agent_performance_correction",
+    "intervention_category": "factual_information",
+    "standardized_intervention": {
+      "intervention_type": "direct_command",
+      "trigger": "agent_performance",
+      "macro_actions": [
+        {
+          "action_type": "movement",
+          "target": "onion dispenser",
+          "description": "Move to the onion dispenser to pick up an onion",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "onion",
+          "description": "Pick up an onion",
+          "priority": 1
+        },
+        {
+          "action_type": "movement",
+          "target": "nearest pot",
+          "description": "Move to one of the pots to add the onion",
+          "priority": 1
+        },
+        {
+          "action_type": "interaction",
+          "target": "pot",
+          "description": "Add onion to the pot to start cooking soup",
+          "priority": 1
+        }
+      ],
+      "urgency": "normal",
+      "context": "Ensure the agent picks up an onion and adds it to a pot to start cooking soup as instructed."
+    },
+    "macro_actions": [
+      {
+        "action_type": "movement",
+        "target": "onion dispenser",
+        "description": "Move to the onion dispenser to pick up an onion",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "onion",
+        "description": "Pick up an onion",
+        "priority": 1
+      },
+      {
+        "action_type": "movement",
+        "target": "nearest pot",
+        "description": "Move to one of the pots to add the onion",
+        "priority": 1
+      },
+      {
+        "action_type": "interaction",
+        "target": "pot",
+        "description": "Add onion to the pot to start cooking soup",
+        "priority": 1
+      }
+    ],
+    "state_features": [
+      3.0,
+      3.0,
+      1.0,
+      3.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      2.0,
+      20.0,
+      2.0,
+      1.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "metadata": null
+  }
+]
