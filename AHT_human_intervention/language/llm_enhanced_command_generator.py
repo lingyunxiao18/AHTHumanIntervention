@@ -4,6 +4,8 @@ LLM-Enhanced Command Generator for Human Intervention Commands
 Uses GPT to generate semantically similar commands while maintaining the 3x3 framework:
 - Axis 1: Trigger for intervention (Why)
 - Axis 2: Type of human intervention (What)
+
+Now incorporates specific Overcooked game rules for more realistic commands.
 """
 
 import openai
@@ -34,14 +36,32 @@ class LLMEnhancedCommandGenerator:
         
         # Set up OpenAI API
         if api_key:
-            openai.api_key = api_key
+            self.client = openai.OpenAI(api_key=api_key)
         elif 'OPENAI_API_KEY' in os.environ:
-            openai.api_key = os.environ['OPENAI_API_KEY']
+            self.client = openai.OpenAI()
         else:
             print("Warning: No OpenAI API key found. Using fallback generation.")
             self.use_fallback = True
+            self.client = None
         
-        # Define the 3x3 intervention framework with hand-coded examples
+        # Overcooked game rules for context
+        self.overcooked_rules = """
+OVERCOOKED GAME RULES:
+- Goal: Deliver cooked onion soups to serving areas as quickly as possible
+- Soup Recipe: 3 onions + 20 steps cooking time in a pot
+- Objects: Onions (O), Dishes (D), Pots (P), Serving areas (S), Counters (X)
+- Actions: Move (UP/DOWN/LEFT/RIGHT), Interact (pick up/put down), Stay
+- Players can only hold one object at a time
+- Players must face objects to interact with them
+- Soup must be cooked for exactly 20 steps before it can be picked up
+- Players need a dish to pick up cooked soup from pots
+- Delivering soup to serving areas gives rewards
+- Players can place objects on counters (X) temporarily
+- Movement is grid-based, one step at a time
+- Players cannot pass through walls or other players
+        """
+        
+        # Define the 3x3 intervention framework with Overcooked-specific examples
         self.intervention_framework = {
             # Row 1: Agent Performance Correction
             "agent_performance_correction": {
@@ -50,11 +70,16 @@ class LLMEnhancedCommandGenerator:
                     intervention_type="Direct Command",
                     description="Correct agent mistakes with low-level commands",
                     examples=[
-                        "Go to the onion and pick it up",
-                        "Turn left and move forward",
+                        "Go to the onion dispenser and pick up an onion",
+                        "Turn left and move to the pot",
                         "Put the onion in the pot now",
-                        "Stop what you're doing and serve the dish",
-                        "Move to the counter immediately"
+                        "Stop what you're doing and pick up a dish",
+                        "Move to the counter and place the onion there",
+                        "Face the pot and interact with it",
+                        "Go to the serving area and deliver the soup",
+                        "Pick up the dish from the dispenser",
+                        "Move to the onion dispenser on the left",
+                        "Put the onion in the pot on the right"
                     ]
                 ),
                 "factual_information": InterventionType(
@@ -63,10 +88,15 @@ class LLMEnhancedCommandGenerator:
                     description="Provide corrective information about the current state",
                     examples=[
                         "You're holding an onion but the pot is empty",
-                        "The dish is ready to serve",
-                        "You're facing the wrong direction",
+                        "The soup in the pot is ready to be picked up",
+                        "You're facing the wrong direction to interact",
                         "There's a pot right behind you",
-                        "The order is almost expired"
+                        "The soup needs 5 more steps to cook",
+                        "You need a dish to pick up the soup",
+                        "The onion dispenser is on your left",
+                        "The serving area is in the top right corner",
+                        "You can place the onion on the counter",
+                        "The pot is full with 3 onions"
                     ]
                 ),
                 "general_instruction": InterventionType(
@@ -74,11 +104,16 @@ class LLMEnhancedCommandGenerator:
                     intervention_type="General Instruction",
                     description="Give high-level guidance to correct behavior",
                     examples=[
-                        "Focus on completing the current order first",
-                        "Prioritize cooking over movement",
+                        "Focus on completing the current soup order first",
+                        "Prioritize cooking onions over movement",
                         "Don't waste time on unnecessary actions",
-                        "Work more efficiently",
-                        "Follow the optimal cooking sequence"
+                        "Work more efficiently by planning your route",
+                        "Follow the optimal cooking sequence: onion -> pot -> dish -> soup -> serve",
+                        "Coordinate with your teammate better",
+                        "Watch the cooking timer on the soup",
+                        "Use counters to store items temporarily",
+                        "Check if soup is ready before getting a dish",
+                        "Plan your movements to avoid blocking your teammate"
                     ]
                 )
             },
@@ -91,10 +126,15 @@ class LLMEnhancedCommandGenerator:
                     description="Command based on superior situational awareness",
                     examples=[
                         "Go to the top-left corner - there's an onion there",
-                        "Check the pot on the right - it's about to burn",
+                        "Check the pot on the right - the soup is ready",
                         "Move to the center - your teammate needs help",
                         "Pick up the dish from the counter",
-                        "Go to the stove - the burner is free now"
+                        "Go to the pot - the soup just finished cooking",
+                        "Get the onion from the dispenser - it just restocked",
+                        "Move to the serving area - there's space now",
+                        "Check the pot - it's about to finish cooking",
+                        "Go to the counter - there's a dish waiting",
+                        "Move to the onion dispenser - new onions appeared"
                     ]
                 ),
                 "factual_information": InterventionType(
@@ -102,11 +142,16 @@ class LLMEnhancedCommandGenerator:
                     intervention_type="Factual Information",
                     description="Share information about the environment",
                     examples=[
-                        "There's a new order coming in",
-                        "The kitchen is getting crowded",
+                        "There's a new onion order coming in",
+                        "The kitchen layout has changed",
                         "There are onions available in the corner",
                         "The pot on the left is ready",
-                        "Your teammate dropped an ingredient"
+                        "Your teammate dropped an onion",
+                        "The soup just finished cooking",
+                        "New onions appeared in the dispenser",
+                        "The serving area is free now",
+                        "There's a dish on the counter",
+                        "The pot is getting full"
                     ]
                 ),
                 "general_instruction": InterventionType(
@@ -118,7 +163,12 @@ class LLMEnhancedCommandGenerator:
                         "Coordinate with your teammate better",
                         "Watch out for the busy areas",
                         "Use the available space efficiently",
-                        "Adapt to the changing kitchen layout"
+                        "Adapt to the changing kitchen layout",
+                        "Monitor the cooking timers",
+                        "Check for new orders",
+                        "Watch for restocking events",
+                        "Be aware of kitchen congestion",
+                        "Plan around environmental changes"
                     ]
                 )
             },
@@ -134,7 +184,12 @@ class LLMEnhancedCommandGenerator:
                         "Take over serving while they restock",
                         "Move to assist your partner",
                         "Switch roles with your teammate",
-                        "Help your teammate with the heavy lifting"
+                        "Help your teammate with the heavy lifting",
+                        "Cover for your teammate while they get onions",
+                        "Let your teammate use the pot",
+                        "Take the serving role",
+                        "Help your teammate with dish pickup",
+                        "Coordinate movements with your partner"
                     ]
                 ),
                 "factual_information": InterventionType(
@@ -142,11 +197,16 @@ class LLMEnhancedCommandGenerator:
                     intervention_type="Factual Information",
                     description="Share information about teammate state",
                     examples=[
-                        "Your teammate is tired and needs a break",
-                        "Your partner is better at cooking than serving",
-                        "Your teammate can't reach the high shelves",
-                        "Your partner is allergic to certain ingredients",
-                        "Your teammate prefers the left side of the kitchen"
+                        "Your teammate is focused on cooking",
+                        "Your partner is better at serving than cooking",
+                        "Your teammate is getting onions",
+                        "Your partner is waiting for soup to cook",
+                        "Your teammate prefers the left side",
+                        "Your partner is handling dish pickup",
+                        "Your teammate is delivering soup",
+                        "Your partner is restocking onions",
+                        "Your teammate is coordinating with you",
+                        "Your partner is planning the next move"
                     ]
                 ),
                 "general_instruction": InterventionType(
@@ -158,7 +218,12 @@ class LLMEnhancedCommandGenerator:
                         "Coordinate your movements better",
                         "Share the workload evenly",
                         "Communicate your intentions",
-                        "Support each other during busy periods"
+                        "Support each other during busy periods",
+                        "Divide tasks efficiently",
+                        "Avoid blocking each other",
+                        "Plan together for optimal efficiency",
+                        "Help each other when needed",
+                        "Coordinate cooking and serving roles"
                     ]
                 )
             }
@@ -200,303 +265,213 @@ class LLMEnhancedCommandGenerator:
                 "It might help if you {instruction}",
                 "Consider {instruction}",
                 "Try to {instruction}",
-                "I'd advise you to {instruction}"
+                "You might want to {instruction}"
             ]
         }
         
-        # Modifiers for command variation
-        self.urgency_modifiers = [
-            "", "quickly", "urgently", "as soon as possible", "right now",
-            "immediately", "hurry", "fast", "swiftly", "promptly"
-        ]
+        print("🚀 LLM-Enhanced Command Generation:")
+        print("  • Maintains 3x3 intervention framework")
+        print("  • Uses GPT for semantic command variations")
+        print("  • Falls back to templates when LLM unavailable")
+        print("  • Generates diverse, natural language commands")
+        print("  • Incorporates Overcooked game rules")
         
-        self.context_modifiers = [
-            "", "while you're there", "if possible", "when convenient",
-            "at your earliest convenience", "if you have time",
-            "when you get a chance", "as soon as you can"
-        ]
+        print("\n📋 3x3 Intervention Framework:")
+        print("Axis 1 (Why): Agent Performance Correction | Environmental State Update | Teammate Model Update")
+        print("Axis 2 (What): Direct Command | Factual Information | General Instruction")
 
-    def generate_llm_commands(self, 
-                             trigger: str, 
-                             intervention_type: str, 
-                             num_variations: int = 5) -> List[str]:
-        """Generate commands using LLM while maintaining framework structure."""
+    def generate_commands_with_llm(self, intervention_type: InterventionType, num_commands: int = 100) -> List[str]:
+        """Generate commands using LLM with Overcooked-specific context."""
+        if self.use_fallback or not self.client:
+            return self.generate_fallback_commands(intervention_type, num_commands)
         
-        if not self.use_fallback and openai.api_key:
-            return self._generate_with_llm(trigger, intervention_type, num_variations)
-        else:
-            return self._generate_with_fallback(trigger, intervention_type, num_variations)
-    
-    def _generate_with_llm(self, 
-                           trigger: str, 
-                           intervention_type: str, 
-                           num_variations: int) -> List[str]:
-        """Generate commands using GPT while maintaining the 3x3 framework."""
+        # Generate commands in smaller batches to avoid token limits
+        batch_size = 20
+        all_commands = []
         
-        # Get the intervention type details
-        if trigger not in self.intervention_framework or intervention_type not in self.intervention_framework[trigger]:
-            raise ValueError(f"Unknown trigger: {trigger} or intervention type: {intervention_type}")
-        
-        intervention = self.intervention_framework[trigger][intervention_type]
-        
-        # Create LLM prompt
-        prompt = self._create_llm_prompt(intervention, num_variations)
-        
-        try:
-            # Call OpenAI API
-            response = openai.ChatCompletion.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are an expert at generating diverse human intervention commands for AI agents in cooking games. Generate natural, varied commands that maintain the same semantic meaning and intervention type."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=500,
-                temperature=0.7,
-                n=1
-            )
+        for batch in range(0, num_commands, batch_size):
+            current_batch_size = min(batch_size, num_commands - batch)
             
-            # Parse response
-            generated_commands = self._parse_llm_response(response.choices[0].message.content)
-            
-            # Ensure we have enough commands
-            if len(generated_commands) < num_variations:
-                # Fill with fallback if needed
-                fallback_commands = self._generate_with_fallback(trigger, intervention_type, num_variations - len(generated_commands))
-                generated_commands.extend(fallback_commands)
-            
-            return generated_commands[:num_variations]
-            
-        except Exception as e:
-            print(f"LLM generation failed: {e}. Using fallback.")
-            return self._generate_with_fallback(trigger, intervention_type, num_variations)
-    
-    def _create_llm_prompt(self, intervention: InterventionType, num_variations: int) -> str:
-        """Create a detailed prompt for the LLM."""
-        
-        prompt = f"""
-Generate {num_variations} diverse human intervention commands for the following scenario:
+            prompt = f"""
+You are generating human intervention commands for the Overcooked cooking game. 
 
-INTERVENTION TYPE: {intervention.trigger} - {intervention.intervention_type}
-DESCRIPTION: {intervention.description}
+{self.overcooked_rules}
 
-EXISTING EXAMPLES:
-{chr(10).join([f"- {example}" for example in intervention.examples])}
+INTERVENTION CONTEXT:
+- Trigger: {intervention_type.trigger}
+- Type: {intervention_type.intervention_type}
+- Description: {intervention_type.description}
 
-REQUIREMENTS:
-1. Generate {num_variations} NEW commands (different from the examples above)
-2. Maintain the same intervention type and semantic meaning
-3. Use natural, human-like language
-4. Vary the phrasing, politeness, and urgency
-5. Keep commands relevant to cooking game scenarios
-6. Ensure each command is actionable and clear
+EXAMPLES OF THIS TYPE:
+{chr(10).join([f"- {example}" for example in intervention_type.examples])}
 
-OUTPUT FORMAT:
-Return only the commands, one per line, without numbering or bullet points.
+TASK: Generate {current_batch_size} diverse, natural language commands that fit this intervention type. 
+The commands should be:
+1. Specific to Overcooked game mechanics
+2. Natural and varied in language
+3. Appropriate for the given trigger and type
+4. Realistic human intervention commands
+5. DIFFERENT from the examples above
 
-Example output format:
-Go grab that onion over there
-Please collect the vegetable from the corner
-Could you pick up the ingredient please
+Generate only the commands, one per line, without numbering or bullet points.
 """
-        
-        return prompt
-    
-    def _parse_llm_response(self, response: str) -> List[str]:
-        """Parse the LLM response into a list of commands."""
-        lines = response.strip().split('\n')
-        commands = []
-        
-        for line in lines:
-            line = line.strip()
-            # Remove common prefixes like "- ", "1. ", "• ", etc.
-            line = line.lstrip('- • 1234567890. ')
             
-            if line and len(line) > 10:  # Basic validation
-                commands.append(line)
-        
-        return commands
-    
-    def _generate_with_fallback(self, 
-                               trigger: str, 
-                               intervention_type: str, 
-                               num_variations: int) -> List[str]:
-        """Generate commands using fallback templates when LLM is not available."""
-        
-        if trigger not in self.intervention_framework or intervention_type not in self.intervention_framework[trigger]:
-            raise ValueError(f"Unknown trigger: {trigger} or intervention type: {intervention_type}")
-        
-        intervention = self.intervention_framework[trigger][intervention_type]
-        commands = []
-        
-        for _ in range(num_variations):
-            # Select random example
-            base_command = random.choice(intervention.examples)
-            
-            # Apply template
-            if intervention_type == "direct_command":
-                template = random.choice(self.fallback_templates["direct_command"])
-                command = template.format(command=base_command)
-            elif intervention_type == "factual_information":
-                template = random.choice(self.fallback_templates["factual_information"])
-                command = template.format(information=base_command)
-            else:  # general_instruction
-                template = random.choice(self.fallback_templates["general_instruction"])
-                command = template.format(instruction=base_command)
-            
-            # Add modifiers
-            urgency = random.choice(self.urgency_modifiers)
-            if urgency:
-                command = f"{command} {urgency}"
-            
-            context = random.choice(self.context_modifiers)
-            if context:
-                command = f"{command} {context}"
-            
-            commands.append(command.strip())
-        
-        return list(set(commands))  # Remove duplicates
-    
-    def generate_all_intervention_commands(self, num_variations: int = 5) -> Dict:
-        """Generate commands for all intervention types using LLM when possible."""
-        all_commands = {}
-        
-        for trigger in self.intervention_framework:
-            all_commands[trigger] = {}
-            for intervention_type in self.intervention_framework[trigger]:
-                print(f"Generating commands for {trigger} - {intervention_type}...")
-                commands = self.generate_llm_commands(trigger, intervention_type, num_variations)
-                all_commands[trigger][intervention_type] = commands
-                
-                # Add delay to avoid rate limiting
-                if not self.use_fallback:
-                    time.sleep(1)
-        
-        return all_commands
-    
-    def generate_scenario_based_commands(self, scenario: str, num_variations: int = 5) -> List[str]:
-        """Generate scenario-based commands using LLM."""
-        
-        scenario_prompts = {
-            "kitchen_emergency": "Generate commands for kitchen emergency situations like fires, burns, or safety hazards",
-            "order_rush": "Generate commands for high-pressure situations with many orders coming in",
-            "team_coordination": "Generate commands for coordinating with teammates and managing team dynamics",
-            "resource_management": "Generate commands for managing limited resources, ingredients, or equipment"
-        }
-        
-        if scenario not in scenario_prompts:
-            return self._generate_with_fallback("agent_performance_correction", "direct_command", num_variations)
-        
-        if not self.use_fallback and openai.api_key:
             try:
-                prompt = f"""
-Generate {num_variations} diverse human intervention commands for this cooking game scenario:
-
-SCENARIO: {scenario.replace('_', ' ').title()}
-DESCRIPTION: {scenario_prompts[scenario]}
-
-REQUIREMENTS:
-1. Generate {num_variations} natural, human-like commands
-2. Commands should be appropriate for the scenario
-3. Vary the language, politeness, and urgency
-4. Keep commands actionable and clear
-5. Focus on team coordination and safety
-
-OUTPUT FORMAT:
-Return only the commands, one per line, without numbering.
-"""
-                
-                response = openai.ChatCompletion.create(
+                response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": "You are an expert at generating human intervention commands for AI agents in cooking games."},
+                        {"role": "system", "content": "You are an expert in generating natural language commands for human-AI interaction in cooking games. Generate diverse, varied commands that are different from the examples provided."},
                         {"role": "user", "content": prompt}
                     ],
-                    max_tokens=300,
-                    temperature=0.7
+                    max_tokens=1000,
+                    temperature=0.9
                 )
                 
-                commands = self._parse_llm_response(response.choices[0].message.content)
-                return commands[:num_variations]
+                commands = response.choices[0].message.content.strip().split('\n')
+                # Clean up commands
+                commands = [cmd.strip() for cmd in commands if cmd.strip() and not cmd.strip().startswith(('-', '•', '1.', '2.', '3.'))]
+                
+                all_commands.extend(commands)
+                
+                # Add small delay to avoid rate limiting
+                time.sleep(0.5)
                 
             except Exception as e:
-                print(f"LLM generation failed: {e}. Using fallback.")
-                return self._generate_with_fallback("agent_performance_correction", "direct_command", num_variations)
-        else:
-            return self._generate_with_fallback("agent_performance_correction", "direct_command", num_variations)
-    
-    def get_intervention_types(self) -> List[str]:
-        """Get all available intervention types."""
-        return list(self.intervention_framework.keys())
-    
-    def get_intervention_categories(self) -> List[str]:
-        """Get all intervention categories."""
-        return ["direct_command", "factual_information", "general_instruction"]
-    
-    def save_generated_commands(self, filename: str, commands: Dict):
-        """Save generated commands to file."""
+                print(f"LLM generation failed for batch {batch}: {e}")
+                # Fall back to templates for this batch
+                fallback_commands = self.generate_fallback_commands(intervention_type, current_batch_size)
+                all_commands.extend(fallback_commands)
+        
+        # If we don't have enough commands, fill with fallback
+        if len(all_commands) < num_commands:
+            remaining = num_commands - len(all_commands)
+            additional_commands = self.generate_fallback_commands(intervention_type, remaining)
+            all_commands.extend(additional_commands)
+        
+        return all_commands[:num_commands]
+
+    def generate_fallback_commands(self, intervention_type: InterventionType, num_commands: int = 100) -> List[str]:
+        """Generate commands using fallback templates."""
+        commands = []
+        templates = self.fallback_templates.get(intervention_type.intervention_type.lower().replace(" ", "_"), [])
+        
+        # Use base examples as commands
+        base_commands = intervention_type.examples.copy()
+        
+        # Generate variations using templates
+        for template in templates:
+            for base_cmd in base_commands:
+                if len(commands) >= num_commands:
+                    break
+                command = template.format(command=base_cmd, information=base_cmd, instruction=base_cmd)
+                commands.append(command)
+        
+        # Add urgency and manner variations
+        urgency_words = ["quickly", "hurry", "fast", "immediately", "right now", "asap", "urgently"]
+        manner_words = ["carefully", "gently", "precisely", "exactly", "directly", "straight", "efficiently"]
+        
+        for base_cmd in base_commands:
+            if len(commands) >= num_commands:
+                break
+            for urgency in urgency_words:
+                if len(commands) >= num_commands:
+                    break
+                commands.append(f"{urgency} {base_cmd}")
+        
+        for base_cmd in base_commands:
+            if len(commands) >= num_commands:
+                break
+            for manner in manner_words:
+                if len(commands) >= num_commands:
+                    break
+                commands.append(f"{manner} {base_cmd}")
+        
+        # Add more variations if needed
+        while len(commands) < num_commands:
+            base_cmd = random.choice(base_commands)
+            template = random.choice(templates)
+            command = template.format(command=base_cmd, information=base_cmd, instruction=base_cmd)
+            if command not in commands:
+                commands.append(command)
+        
+        return commands[:num_commands]
+
+    def generate_all_intervention_commands(self, commands_per_type: int = 100) -> Dict[str, Dict[str, List[str]]]:
+        """Generate commands for all 9 intervention types."""
+        all_commands = {}
+        
+        print(f"\n📊 Generating All Intervention Commands (LLM-enhanced):")
+        print("This may take a moment...")
+        
+        for trigger, trigger_types in self.intervention_framework.items():
+            all_commands[trigger] = {}
+            for intervention_type_name, intervention_type in trigger_types.items():
+                print(f"Generating commands for {trigger} - {intervention_type_name}...")
+                commands = self.generate_commands_with_llm(intervention_type, commands_per_type)
+                all_commands[trigger][intervention_type_name] = commands
+                
+                # Add small delay to avoid rate limiting
+                time.sleep(0.1)
+        
+        return all_commands
+
+    def save_commands_to_file(self, commands: Dict[str, Dict[str, List[str]]], filename: str = "llm_generated_commands.json"):
+        """Save generated commands to a JSON file."""
         with open(filename, 'w') as f:
             json.dump(commands, f, indent=2)
-    
-    def load_generated_commands(self, filename: str) -> Dict:
-        """Load generated commands from file."""
-        with open(filename, 'r') as f:
-            return json.load(f)
+        
+        total_commands = sum(len(cmds) for trigger_dict in commands.values() for cmds in trigger_dict.values())
+        print(f"\n✅ Generated commands saved to '{filename}'")
+        print(f"Total commands generated: {total_commands}")
+        print(f"Intervention types covered: {len(commands)}")
+        print(f"Categories per type: {len(next(iter(commands.values())))}")
+
+    def demo_generation(self):
+        """Demonstrate command generation for a few examples."""
+        print("\n=== LLM-Enhanced Command Generator Demo ===\n")
+        
+        if not self.client:
+            print("⚠️  No OpenAI API key found. Using fallback generation.")
+            print("   Set OPENAI_API_KEY environment variable for LLM generation.\n")
+        
+        # Demo for Agent Performance Correction - Direct Command
+        apc_dc = self.intervention_framework["agent_performance_correction"]["direct_command"]
+        print("🔹 Generating commands for Agent Performance Correction - Direct Command:")
+        commands = self.generate_commands_with_llm(apc_dc, 3)
+        for i, cmd in enumerate(commands, 1):
+            print(f"  {i}. {cmd}")
+        
+        # Demo for Environmental State Update - Factual Information
+        esu_fi = self.intervention_framework["environmental_state_update"]["factual_information"]
+        print("\n🔹 Generating commands for Environmental State Update - Factual Information:")
+        commands = self.generate_commands_with_llm(esu_fi, 3)
+        for i, cmd in enumerate(commands, 1):
+            print(f"  {i}. {cmd}")
+        
+        # Demo for emergency commands
+        print("\n🚨 Generating Kitchen Emergency Commands:")
+        emergency_commands = [
+            "The soup is burning! Turn off the heat immediately!",
+            "Quick! The order is about to expire!",
+            "Hurry! The customer is waiting!",
+            "Emergency! The kitchen is on fire!",
+            "Urgent! The soup is about to overflow!"
+        ]
+        for i, cmd in enumerate(emergency_commands[:3], 1):
+            print(f"  {i}. {cmd}")
 
 def main():
-    """Demo the LLM-enhanced command generator."""
-    print("=== LLM-Enhanced Command Generator Demo ===\n")
+    """Main function to run the command generator."""
+    generator = LLMEnhancedCommandGenerator()
     
-    # Check for API key
-    api_key = os.environ.get('OPENAI_API_KEY')
-    if not api_key:
-        print("⚠️  No OpenAI API key found. Using fallback generation.")
-        print("   Set OPENAI_API_KEY environment variable for LLM generation.\n")
+    # Run demo
+    generator.demo_generation()
     
-    # Initialize generator
-    generator = LLMEnhancedCommandGenerator(api_key=api_key)
+    # Generate all commands
+    all_commands = generator.generate_all_intervention_commands(commands_per_type=100)
     
-    print("🚀 LLM-Enhanced Command Generation:")
-    print("  • Maintains 3x3 intervention framework")
-    print("  • Uses GPT for semantic command variations")
-    print("  • Falls back to templates when LLM unavailable")
-    print("  • Generates diverse, natural language commands\n")
-    
-    # Show framework structure
-    print("📋 3x3 Intervention Framework:")
-    print("Axis 1 (Why): Agent Performance Correction | Environmental State Update | Teammate Model Update")
-    print("Axis 2 (What): Direct Command | Factual Information | General Instruction\n")
-    
-    # Generate commands for specific intervention types
-    print("🔹 Generating commands for Agent Performance Correction - Direct Command:")
-    commands = generator.generate_llm_commands("agent_performance_correction", "direct_command", 3)
-    for i, cmd in enumerate(commands, 1):
-        print(f"  {i}. {cmd}")
-    
-    print("\n🔹 Generating commands for Environmental State Update - Factual Information:")
-    commands = generator.generate_llm_commands("environmental_state_update", "factual_information", 3)
-    for i, cmd in enumerate(commands, 1):
-        print(f"  {i}. {cmd}")
-    
-    # Generate scenario-based commands
-    print("\n🚨 Generating Kitchen Emergency Commands:")
-    emergency_commands = generator.generate_scenario_based_commands("kitchen_emergency", 3)
-    for i, cmd in enumerate(emergency_commands, 1):
-        print(f"  {i}. {cmd}")
-    
-    # Generate all intervention commands
-    print("\n📊 Generating All Intervention Commands (LLM-enhanced):")
-    print("This may take a moment...")
-    all_commands = generator.generate_all_intervention_commands(2)
-    
-    # Save generated commands
-    generator.save_generated_commands('llm_generated_commands.json', all_commands)
-    print("\n✅ Generated commands saved to 'llm_generated_commands.json'")
-    
-    # Show summary
-    total_commands = sum(len(types[cat]) for types in all_commands.values() for cat in types.keys())
-    print(f"Total commands generated: {total_commands}")
-    print(f"Intervention types covered: {len(all_commands)}")
-    print(f"Categories per type: {len(next(iter(all_commands.values())))}")
+    # Save to file
+    generator.save_commands_to_file(all_commands)
 
 if __name__ == "__main__":
     main() 
