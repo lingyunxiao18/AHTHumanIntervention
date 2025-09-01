@@ -29,7 +29,7 @@ class LLMEnhancedCommandGenerator:
     
     def __init__(self, 
                  api_key: Optional[str] = None, 
-                 model: str = "gpt-3.5-turbo",
+                 model: str = "gpt-4o-mini",
                  use_fallback: bool = True):
         self.model = model
         self.use_fallback = use_fallback
@@ -51,7 +51,7 @@ OVERCOOKED GAME RULES:
 - Soup Recipe: 3 onions + 20 steps cooking time in a pot
 - Objects: Onions (O), Dishes (D), Pots (P), Serving areas (S), Counters (X)
 - Actions: Move (UP/DOWN/LEFT/RIGHT), Interact (pick up/put down), Stay
-- Players can only hold one object at a time
+- Players can only hold ONE object at a time
 - Players must face objects to interact with them
 - Soup must be cooked for exactly 20 steps before it can be picked up
 - Players need a dish to pick up cooked soup from pots
@@ -59,7 +59,43 @@ OVERCOOKED GAME RULES:
 - Players can place objects on counters (X) temporarily
 - Movement is grid-based, one step at a time
 - Players cannot pass through walls or other players
-        """
+- NO chopping, cutting, stirring, washing, or cooking actions needed - just INTERACT
+- Pots cannot be carried - they are fixed in place
+- Unlimited supply of onions and dishes from dispensers
+- No cleaning, organizing, or complex tasks - only basic movement and interaction
+- Players cannot communicate with each other directly
+
+EXAMPLE LAYOUT (random0):
+XXXXXXX
+X  O  X
+X P P X
+X     X
+X D D X
+X  S  X
+XXXXXXX
+
+Where:
+- X = Wall (impassable)
+- O = Onion dispenser (unlimited onions)
+- D = Dish dispenser (unlimited dishes)  
+- P = Pot (fixed, cannot be moved)
+- S = Serving area (deliver soup here)
+- Space = Walkable area
+- Players start in walkable areas
+
+VALID ACTIONS:
+- Move UP/DOWN/LEFT/RIGHT to walkable spaces
+- INTERACT when facing an object (pick up/put down)
+- STAY (do nothing)
+
+INVALID ACTIONS (DO NOT GENERATE):
+- Chopping, cutting, stirring, washing
+- Carrying pots or moving them
+- Cleaning areas
+- Communicating with teammates
+- Complex cooking procedures
+- Multiple object handling
+"""
         
         # Define the 3x3 intervention framework with Overcooked-specific examples
         self.intervention_framework = {
@@ -107,7 +143,7 @@ OVERCOOKED GAME RULES:
                         "Focus on completing the current soup order first",
                         "Prioritize cooking onions over movement",
                         "Don't waste time on unnecessary actions",
-                        "Work more efficiently by planning your route",
+                        "Work more efficiently by planning your route to the pot",
                         "Follow the optimal cooking sequence: onion -> pot -> dish -> soup -> serve",
                         "Coordinate with your teammate better",
                         "Watch the cooking timer on the soup",
@@ -180,11 +216,11 @@ OVERCOOKED GAME RULES:
                     intervention_type="Direct Command",
                     description="Command based on teammate knowledge",
                     examples=[
-                        "Let your teammate handle the cooking",
-                        "Take over serving while they restock",
-                        "Move to assist your partner",
+                        "Let your teammate handle the cooking and you handle the serving",
+                        "Take over serving while they cook",
+                        "Move to the pot to assist your partner",
                         "Switch roles with your teammate",
-                        "Help your teammate with the heavy lifting",
+                        "Help your teammate with picking up the plate",
                         "Cover for your teammate while they get onions",
                         "Let your teammate use the pot",
                         "Take the serving role",
@@ -282,8 +318,9 @@ OVERCOOKED GAME RULES:
 
     def generate_commands_with_llm(self, intervention_type: InterventionType, num_commands: int = 100) -> List[str]:
         """Generate commands using LLM with Overcooked-specific context."""
-        if self.use_fallback or not self.client:
-            return self.generate_fallback_commands(intervention_type, num_commands)
+        if not self.client:
+            print(f"❌ No OpenAI client available. Cannot generate commands for {intervention_type.trigger} - {intervention_type.intervention_type}")
+            return []
         
         # Generate commands in smaller batches to avoid token limits
         batch_size = 20
@@ -306,12 +343,41 @@ EXAMPLES OF THIS TYPE:
 {chr(10).join([f"- {example}" for example in intervention_type.examples])}
 
 TASK: Generate {current_batch_size} diverse, natural language commands that fit this intervention type. 
+
+CRITICAL: Your generated commands must be VERY SIMILAR to the examples above in terms of:
+- Language style and tone
+- Sentence structure and phrasing
+- Level of specificity
+- Type of information conveyed
+- Overall approach and intent
+
+The examples show the EXACT pattern you should follow. Generate commands that could easily be mixed in with these examples without anyone noticing they were generated separately.
+
+CRITICAL: The commands must match BOTH the trigger AND the intervention type:
+
+TRIGGER CONTEXT:
+- AGENT PERFORMANCE CORRECTION: Commands that correct agent mistakes or inefficiencies
+- ENVIRONMENTAL STATE UPDATE: Commands based on superior situational awareness or environmental changes
+- TEAMMATE MODEL UPDATE: Commands based on teammate knowledge or coordination needs
+
+INTERVENTION TYPE:
+- DIRECT COMMAND: Give specific, actionable instructions (e.g., "Move to the onion dispenser", "Interact with the pot")
+- FACTUAL INFORMATION: Provide information about the current state (e.g., "The soup needs 5 more steps", "You're holding an onion")
+- GENERAL INSTRUCTION: Give high-level guidance or strategy (e.g., "Focus on completing orders", "Coordinate with your teammate")
+
 The commands should be:
-1. Specific to Overcooked game mechanics
+1. Specific to Overcooked game mechanics (ONLY move, interact, stay)
 2. Natural and varied in language
-3. Appropriate for the given trigger and type
+3. Appropriate for the given trigger AND type
 4. Realistic human intervention commands
-5. DIFFERENT from the examples above
+5. VERY SIMILAR to the examples above in style, tone, and approach
+6. ONLY use valid actions (move, interact, stay) - NO invalid actions
+7. MATCH THE TRIGGER CONTEXT (agent correction vs environmental awareness vs teammate coordination)
+8. MATCH THE INTERVENTION TYPE (direct command vs factual information vs general instruction)
+9. FOLLOW THE EXACT PATTERN shown in the examples above
+10. BE INDISTINGUISHABLE from the examples in terms of style and approach
+
+CRITICAL: Only generate commands that use the valid actions listed above. Do NOT include any invalid actions like chopping, stirring, carrying pots, cleaning, etc.
 
 Generate only the commands, one per line, without numbering or bullet points.
 """
@@ -320,7 +386,7 @@ Generate only the commands, one per line, without numbering or bullet points.
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": "You are an expert in generating natural language commands for human-AI interaction in cooking games. Generate diverse, varied commands that are different from the examples provided."},
+                        {"role": "system", "content": f"You are an expert in generating natural language commands for human-AI interaction in cooking games. Your generated commands must be VERY SIMILAR to the examples provided in the prompt - they should follow the exact same language style, tone, sentence structure, and approach. Generate commands that could easily be mixed in with the examples without anyone noticing they were generated separately. Match BOTH the trigger context (agent correction vs environmental awareness vs teammate coordination) AND the intervention type (direct command vs factual information vs general instruction). Use ONLY valid Overcooked actions: move, interact, stay. Do NOT include invalid actions like chopping, stirring, carrying pots, cleaning, etc."},
                         {"role": "user", "content": prompt}
                     ],
                     max_tokens=1000,
@@ -337,18 +403,12 @@ Generate only the commands, one per line, without numbering or bullet points.
                 time.sleep(0.5)
                 
             except Exception as e:
-                print(f"LLM generation failed for batch {batch}: {e}")
-                # Fall back to templates for this batch
-                fallback_commands = self.generate_fallback_commands(intervention_type, current_batch_size)
-                all_commands.extend(fallback_commands)
+                print(f"❌ LLM generation failed for batch {batch}: {e}")
+                # No fallback - skip this batch
+                continue
         
-        # If we don't have enough commands, fill with fallback
-        if len(all_commands) < num_commands:
-            remaining = num_commands - len(all_commands)
-            additional_commands = self.generate_fallback_commands(intervention_type, remaining)
-            all_commands.extend(additional_commands)
-        
-        return all_commands[:num_commands]
+        print(f"  ✅ Generated {len(all_commands)} LLM commands")
+        return all_commands
 
     def generate_fallback_commands(self, intervention_type: InterventionType, num_commands: int = 100) -> List[str]:
         """Generate commands using fallback templates."""
