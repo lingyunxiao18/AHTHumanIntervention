@@ -25,7 +25,7 @@ def build_text_state_description(mdp, state, description_type: str = "english") 
         Text description of the state
     """
     try:
-        return describe_state(mdp, state, kind=description_type)
+        return describe_state(mdp, state, mode=description_type)
     except Exception as e:
         print(f"[ERROR] Error building text state description: {e}")
         return "Kitchen state: unknown"
@@ -134,7 +134,7 @@ class TextBasedLangConditionedPolicy(nn.Module):
         
         Args:
             mdp: The Overcooked MDP object
-            states: List of state objects
+            states: List of state objects or state text strings
             human_commands: List of human commands (can be None or empty strings)
             
         Returns:
@@ -151,9 +151,20 @@ class TextBasedLangConditionedPolicy(nn.Module):
             text_inputs = []
             for i, state in enumerate(states):
                 command = human_commands[i] if i < len(human_commands) else ""
-                combined_text = build_combined_text_input(
-                    mdp, state, command, self.description_type
-                )
+                
+                # Check if state is already a string (pre-generated state text)
+                if isinstance(state, str):
+                    state_desc = state
+                else:
+                    # Generate state description from state object
+                    state_desc = build_text_state_description(mdp, state, self.description_type)
+                
+                # Combine state description with command
+                if command.strip():
+                    combined_text = f"State: {state_desc}\nCommand: {command}"
+                else:
+                    combined_text = f"State: {state_desc}"
+                
                 text_inputs.append(combined_text)
             
             # Encode text inputs

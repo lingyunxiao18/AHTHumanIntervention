@@ -11,6 +11,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import random
+import json
 from typing import List, Tuple, Dict, Any
 
 from language_conditioned_policy import TextBasedLangConditionedPolicy
@@ -22,39 +23,26 @@ class TextPolicyDataset(Dataset):
     Contains (state_description, human_command, action) tuples.
     """
     
-    def __init__(self, mdp, states: List, commands: List[str], actions: List[int], 
-                 description_type: str = "english"):
+    def __init__(self, mdp, data: List[dict]):
         """
         Args:
             mdp: The Overcooked MDP object
-            states: List of state objects
-            commands: List of human commands (can be empty strings)
-            actions: List of action indices
-            description_type: Type of state description to use
+            data: List of dictionaries containing 'state_text', 'command', 'action'
         """
         self.mdp = mdp
-        self.states = states
-        self.commands = commands
-        self.actions = actions
-        self.description_type = description_type
+        self.data = data
         
-        # Validate inputs
-        assert len(states) == len(commands) == len(actions), "All lists must have same length"
-        
-        print(f"[INFO] Created dataset with {len(states)} samples")
+        print(f"[INFO] Created dataset with {len(data)} samples")
     
     def __len__(self):
-        return len(self.states)
+        return len(self.data)
     
     def __getitem__(self, idx):
-        state = self.states[idx]
-        command = self.commands[idx]
-        action = self.actions[idx]
-        
+        item = self.data[idx]
         return {
-            'state': state,
-            'command': command,
-            'action': action
+            'state_text': item['state_text'],
+            'command': item['human_command'],
+            'action': item['action']
         }
 
 def create_synthetic_training_data(num_samples: int = 1000) -> Tuple[List, List[str], List[int]]:
@@ -153,13 +141,13 @@ def create_dummy_mdp():
     return DummyMDP()
 
 def custom_collate_fn(batch):
-    """Custom collate function to handle state objects."""
-    states = [item['state'] for item in batch]
+    """Custom collate function to handle text-based data."""
+    state_texts = [item['state_text'] for item in batch]
     commands = [item['command'] for item in batch]
     actions = torch.tensor([item['action'] for item in batch], dtype=torch.long)
     
     return {
-        'state': states,
+        'state_text': state_texts,
         'command': commands,
         'action': actions
     }
@@ -167,9 +155,10 @@ def custom_collate_fn(batch):
 def train_text_policy(policy: TextBasedLangConditionedPolicy, 
                      train_loader: DataLoader,
                      val_loader: DataLoader = None,
-                     num_epochs: int = 10,
+                     num_epochs: int = 2,
                      learning_rate: float = 1e-4,
-                     device: str = "cpu"):
+                     device: str = "cpu",
+                     output_dir: str = None):
     """
     Train the text-based policy network.
     
@@ -197,12 +186,12 @@ def train_text_policy(policy: TextBasedLangConditionedPolicy,
         total_predictions = 0
         
         for batch_idx, batch in enumerate(train_loader):
-            states = batch['state']
+            state_texts = batch['state_text']
             commands = batch['command']
             target_actions = batch['action'].to(device)
             
             # Forward pass
-            logits = policy.forward(policy.mdp, states, commands)
+            logits = policy.forward(policy.mdp, state_texts, commands)
             
             # Calculate loss
             loss = criterion(logits, target_actions)
@@ -240,11 +229,11 @@ def train_text_policy(policy: TextBasedLangConditionedPolicy,
             
             with torch.no_grad():
                 for batch in val_loader:
-                    states = batch['state']
+                    state_texts = batch['state_text']
                     commands = batch['command']
                     target_actions = batch['action'].to(device)
                     
-                    logits = policy.forward(policy.mdp, states, commands)
+                    logits = policy.forward(policy.mdp, state_texts, commands)
                     loss = criterion(logits, target_actions)
                     
                     val_loss += loss.item()
@@ -258,27 +247,65 @@ def train_text_policy(policy: TextBasedLangConditionedPolicy,
             print(f"Validation - Loss: {val_avg_loss:.4f}, Accuracy: {val_accuracy:.3f}")
     
     print("Training completed!")
+    
+    # Save the trained policy
+    if output_dir:
+        import os
+        policy_path = os.path.join(output_dir, "text_policy.pt")
+        torch.save({
+            'model_state_dict': policy.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'epoch': num_epochs,
+            'loss': val_avg_loss if val_loader else total_loss / len(train_loader),
+            'accuracy': val_accuracy if val_loader else correct_predictions / total_predictions,
+            'mdp': policy.mdp,
+            'num_actions': policy.num_actions,
+            'text_dim': policy.text_dim,
+            'hidden_dim': policy.hidden_dim
+        }, policy_path)
+        print(f"Policy saved to: {policy_path}")
 
 def main():
     """Main training function."""
-    print("=== Text-Based Policy Training Demo ===\n")
+    print("=== Text-Based Policy Training with Real Data ===\n")
     
     # Set random seeds for reproducibility
     torch.manual_seed(42)
     np.random.seed(42)
     random.seed(42)
     
-    # Create dummy environment
-    mdp = create_dummy_mdp()
+    # Load real training data
+    print("1. Loading real training data...")
     
-    # Generate synthetic training data
-    print("1. Generating synthetic training data...")
-    train_states, train_commands, train_actions = create_synthetic_training_data(1000)
-    val_states, val_commands, val_actions = create_synthetic_training_data(200)
+    # Load data with commands
+    with open("generated_data/trajectories_with_commands/policy_training_data.json", "r") as f:
+        data_with_commands = json.load(f)
+    print(f"   - Loaded {len(data_with_commands)} samples with commands")
+    
+    # Load data without commands
+    with open("generated_data/trajectories_no_commands/policy_training_data.json", "r") as f:
+        data_without_commands = json.load(f)
+    print(f"   - Loaded {len(data_without_commands)} samples without commands")
+    
+    # Combine datasets
+    all_data = data_with_commands + data_without_commands
+    print(f"   - Total samples: {len(all_data)}")
+    
+    # Split into train/val (80/20)
+    random.shuffle(all_data)
+    split_idx = int(0.8 * len(all_data))
+    train_data = all_data[:split_idx]
+    val_data = all_data[split_idx:]
+    
+    print(f"   - Training samples: {len(train_data)}")
+    print(f"   - Validation samples: {len(val_data)}")
+    
+    # Create MDP for the policy
+    mdp = create_dummy_mdp()  # We'll use the same layout as training data
     
     # Create datasets
-    train_dataset = TextPolicyDataset(mdp, train_states, train_commands, train_actions)
-    val_dataset = TextPolicyDataset(mdp, val_states, val_commands, val_actions)
+    train_dataset = TextPolicyDataset(mdp, train_data)
+    val_dataset = TextPolicyDataset(mdp, val_data)
     
     # Create data loaders with custom collate function
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=custom_collate_fn)
@@ -308,16 +335,34 @@ def main():
     
     # Train the policy
     print("3. Starting training...")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"   - Using device: {device}")
+    
+    # Device selection for Apple M4 GPU
+    if torch.backends.mps.is_available():
+        device = "mps"  # Apple Metal Performance Shaders
+        print(f"   - Using Apple M4 GPU (MPS)")
+    elif torch.cuda.is_available():
+        device = "cuda"
+        print(f"   - Using NVIDIA GPU (CUDA)")
+    else:
+        device = "cpu"
+        print(f"   - Using CPU")
+    
+    print(f"   - Device: {device}")
+    
+    # Create output directory for trained policy
+    import os
+    output_dir = "trained_policies/text_policy"
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"   - Policy will be saved to: {output_dir}")
     
     train_text_policy(
         policy=policy,
         train_loader=train_loader,
         val_loader=val_loader,
-        num_epochs=5,
+        num_epochs=2,
         learning_rate=1e-4,
-        device=device
+        device=device,
+        output_dir=output_dir
     )
     
     # Test the trained policy
@@ -326,9 +371,9 @@ def main():
     
     test_commands = [
         "",
-        "move north",
-        "cook soup",
-        "deliver soup"
+        "Go to the onion dispenser and pick up an onion",
+        "You need a dish to pick up the soup",
+        "Prioritize cooking onions}"
     ]
     
     test_state = create_dummy_state()
