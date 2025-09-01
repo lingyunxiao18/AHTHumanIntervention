@@ -26,7 +26,142 @@ from AHT_human_intervention.envs.overcooked.overcooked_ai_py.agents.agent import
 from heuristic_agent import RotateAgent, OnionToPotAgent, PlateAgent
 
 # --- Our language-conditioned policy module ---
-from AHT_human_intervention.language.shared_lang_agent import SharedLangAgent
+from language.language_conditioned_policy import HuggingFaceLangConditionedPolicy
+from transformers import DistilBertTokenizer
+import torch
+
+class TrainedPolicyAgent:
+    """Agent that uses our trained language-conditioned policy."""
+    
+    def __init__(self, mdp, agent_idx=0, model_path=None):
+        self.mdp = mdp
+        self.agent_idx = agent_idx
+        self.command = None
+        self.heuristic = "No command set"
+        
+        # Set default model path if none provided
+        if model_path is None:
+            # Get the directory where this script is located
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            model_path = os.path.join(script_dir, "language", "test_policy_best.pth")
+        
+        # Load the trained policy
+        print(f"[INFO] Loading trained policy from {model_path}")
+        print(f"[DEBUG] Model path exists: {os.path.exists(model_path)}")
+        print(f"[DEBUG] Model path is file: {os.path.isfile(model_path)}")
+        print(f"[DEBUG] Model path is absolute: {os.path.isabs(model_path)}")
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Initialize policy architecture
+        state_dim = 20
+        num_actions = 6
+        self.policy = HuggingFaceLangConditionedPolicy(
+            state_dim=state_dim,
+            num_actions=num_actions,
+            text_dim=768,
+            hidden_dim=256,
+            freeze_bert=False
+        ).to(self.device)
+        
+        # Load trained weights
+        try:
+            checkpoint = torch.load(model_path, map_location=self.device)
+            self.policy.load_state_dict(checkpoint['model_state_dict'])
+            print(f"[INFO] Policy loaded successfully! Best validation accuracy: {checkpoint.get('val_acc', 'Unknown')}")
+        except Exception as e:
+            print(f"[WARNING] Could not load trained policy: {e}")
+            print("[WARNING] Using untrained policy (random actions)")
+        
+        # Initialize tokenizer
+        self.tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+        
+        # Set to evaluation mode
+        self.policy.eval()
+    
+    def set_agent_index(self, agent_idx):
+        self.agent_idx = agent_idx
+    
+    def set_mdp(self, mdp):
+        self.mdp = mdp
+    
+    def set_command(self, command):
+        """Set the human intervention command."""
+        self.command = command
+        self.heuristic = f"Following command: {command}"
+        print(f"[INFO] Command set: {command}")
+    
+    def get_action(self, state):
+        """Get action from the trained policy."""
+        if not self.command:
+            # No command set, return STAY
+            return 0
+        
+        try:
+            # Extract state features (simplified - you may need to adjust this)
+            state_features = self._extract_state_features(state)
+            state_tensor = torch.tensor(state_features, dtype=torch.float32).unsqueeze(0).to(self.device)
+            
+            # Tokenize command
+            command_tokens = self.tokenizer(
+                self.command,
+                padding='max_length',
+                truncation=True,
+                max_length=128,
+                return_tensors='pt'
+            )
+            
+            command_input_ids = command_tokens['input_ids'].to(self.device)
+            command_attention_mask = command_tokens['attention_mask'].to(self.device)
+            
+            # Get action from policy
+            with torch.no_grad():
+                logits = self.policy(state_tensor, command_input_ids, command_attention_mask)
+                action = torch.argmax(logits, dim=1).item()
+            
+            return action
+            
+        except Exception as e:
+            print(f"[ERROR] Policy inference failed: {e}")
+            return 0  # STAY as fallback
+    
+    def action(self, state):
+        """Method that AgentPair calls to get actions."""
+        return self.get_action(state)
+    
+    def _extract_state_features(self, state):
+        """Extract state features similar to training data."""
+        # This is a simplified version - you may need to match the exact format from training
+        features = []
+        
+        # Player positions and held objects
+        for player in state.players:
+            features.extend([float(player.position[0]), float(player.position[1])])
+            features.append(1.0 if player.held_object else 0.0)
+        
+        # Object counts
+        object_counts = {'onion': 0, 'dish': 0, 'soup': 0}
+        for obj in state.objects.values():
+            if obj.name in object_counts:
+                object_counts[obj.name] += 1
+        
+        for obj_type in ['onion', 'dish', 'soup']:
+            features.append(float(object_counts[obj_type]))
+        
+        # Layout features
+        features.append(float(len(self.mdp.get_pot_locations())))
+        features.append(float(len(self.mdp.get_counter_locations())))
+        features.append(float(len(self.mdp.get_onion_dispenser_locations())))
+        features.append(float(len(self.mdp.get_dish_dispenser_locations())))
+        features.append(float(len(self.mdp.get_serving_locations())))
+        
+        # Timestep (normalized)
+        features.append(float(state.timestep) / 400.0)
+        
+        # Pad to 20 features
+        while len(features) < 20:
+            features.append(0.0)
+        
+        return features[:20]
 
 # Configure OpenAI API key (ensure OPENAI_API_KEY is set in your environment)
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -133,7 +268,8 @@ def main():
         ego_agent.set_mdp(mdp)
         print("[INFO] Running with traditional (non-language) ego agent.")
     else:
-        ego_agent = SharedLangAgent(mdp, agent_idx=0)
+        # Load the policy-based agent
+        ego_agent = TrainedPolicyAgent(mdp, agent_idx=0)
     
     # Start with an interesting confederate agent
     conf_agent = OnionToPotAgent(direction=True)  # Clockwise rotation

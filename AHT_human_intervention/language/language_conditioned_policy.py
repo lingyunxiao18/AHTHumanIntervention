@@ -88,9 +88,17 @@ class HuggingFaceLangConditionedPolicy(nn.Module):
             if freeze_bert:
                 for param in self.text_encoder.parameters():
                     param.requires_grad = False
+            
+            # Calculate actual input dimension for policy head
+            actual_state_dim = hidden_dim  # This is what state_encoder outputs
+            actual_text_dim = text_dim     # This is what BERT outputs (768)
+            policy_input_dim = actual_state_dim + actual_text_dim
+            
+            print(f"[INFO] Policy head input dimension: {policy_input_dim} (state: {actual_state_dim} + text: {actual_text_dim})")
+            
             # Fusion & policy head
             self.policy_head = nn.Sequential(
-                nn.Linear(hidden_dim + text_dim, hidden_dim),
+                nn.Linear(policy_input_dim, hidden_dim),
                 nn.ReLU(),
                 nn.Linear(hidden_dim, num_actions)
             )
@@ -102,18 +110,30 @@ class HuggingFaceLangConditionedPolicy(nn.Module):
         # state_vec: [B, state_dim]
         # input_ids, attention_mask: [B, T]
         try:
+            # Ensure state_vec requires gradients
+            if not state_vec.requires_grad:
+                state_vec = state_vec.detach().requires_grad_(True)
+            
             s_emb = self.state_encoder(state_vec)  # [B, hidden_dim]
+            
+            # Get BERT output and extract the CLS token representation
             bert_out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
             l_emb = bert_out.last_hidden_state[:, 0, :]  # [B, text_dim] (CLS token)
-            x = torch.cat([s_emb, l_emb], dim=-1)  # [B, hidden+text]
+            
+            # Concatenate state and text embeddings
+            x = torch.cat([s_emb, l_emb], dim=-1)  # [B, hidden_dim + text_dim]
+            
+            # Pass through policy head
             logits = self.policy_head(x)  # [B, num_actions]
+            
             return logits
+            
         except Exception as e:
             print(f"[ERROR] Error in HuggingFaceLangConditionedPolicy.forward(): {e}")
             # Return zero logits as fallback
             batch_size = state_vec.shape[0] if state_vec.dim() > 0 else 1
             num_actions = self.policy_head[-1].out_features
-            return torch.zeros(batch_size, num_actions, device=state_vec.device)
+            return torch.zeros(batch_size, num_actions, device=state_vec.device, requires_grad=True)
 
 # ----------------------------------------------------------------------------
 # 3. Tokenizer helper
