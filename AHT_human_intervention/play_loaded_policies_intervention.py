@@ -18,7 +18,7 @@ from AHT_human_intervention.envs.overcooked.overcooked_ai_py.mdp.overcooked_mdp 
 from AHT_human_intervention.runner.shared.base_runner import make_trainer_policy_cls
 from AHT_human_intervention.algorithms.population.utils import EvalPolicy
 from AHT_human_intervention.envs.overcooked.overcooked_ai_py.mdp.actions import Action, Direction
-from AHT_human_intervention.envs.overcooked_new.src.overcooked_ai_py.mdp.overcooked_env import OvercookedEnvPettingZoo
+from AHT_human_intervention.envs.overcooked.overcooked_ai_py.mdp.overcooked_env import OvercookedEnv as OvercookedEnvPettingZoo
 
 # Set random seeds for reproducibility
 np.random.seed(42)
@@ -38,7 +38,7 @@ DISPLAY = True  # Enable display
 os.environ["POLICY_POOL"] = POLICY_POOL_PATH
 
 from AHT_human_intervention.algorithms.population.policy_pool import add_path_prefix
-from AHT_human_intervention.envs.overcooked_new.src.overcooked_ai_py.agents.agent import Agent
+from AHT_human_intervention.envs.overcooked.overcooked_ai_py.agents.agent import Agent
 
 class LoadedPolicyAgent(Agent):
     """Agent that wraps a pre-trained policy to act in the Overcooked environment."""

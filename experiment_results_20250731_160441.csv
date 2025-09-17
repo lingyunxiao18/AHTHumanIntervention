@@ -1,6 +1,0 @@
-scenario_name,run_id,intervention_type,information_type,trigger_step,intervention_step,episode_reward,steps_to_recovery,intervention_success,final_heuristic,confederate_behavior,total_steps,soups_delivered,ingredients_cooked
-direct_pickup,0,Direct Command,Agent Performance Correction,30,30,0,0,False,,normal,400,0,0
-direct_pickup,1,Direct Command,Agent Performance Correction,30,30,0,0,False,,normal,400,0,0
-direct_pickup,2,Direct Command,Agent Performance Correction,30,30,0,0,False,,normal,400,0,0
-direct_pickup,3,Direct Command,Agent Performance Correction,30,30,0,0,False,,normal,400,0,0
-direct_pickup,4,Direct Command,Agent Performance Correction,30,30,0,0,False,,normal,400,0,0

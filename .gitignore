@@ -1,3 +1,5 @@
+# Ignore backup snapshots
+AHT_human_intervention/backup_*/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

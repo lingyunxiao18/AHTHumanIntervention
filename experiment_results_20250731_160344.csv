@@ -1,1 +1,0 @@
-scenario_name,run_id,intervention_type,information_type,trigger_step,intervention_step,episode_reward,steps_to_recovery,intervention_success,final_heuristic,confederate_behavior,total_steps,soups_delivered,ingredients_cooked
