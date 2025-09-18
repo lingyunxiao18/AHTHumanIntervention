@@ -64,6 +64,7 @@ class SimpleHandcodedAgentHumanGuidance:
         self.replan_after_override = False
         self.replanning_needed = False
         self.execution_guidance = None
+        self.macro_override = None  # Track macro override from interventions
         
         # Alternative pathfinding strategies for interventions
         self.pathfinding_strategy = "shortest"  # "shortest", "counterclockwise", "clockwise", "random"
@@ -95,6 +96,7 @@ class SimpleHandcodedAgentHumanGuidance:
         # Handle macro override
         macro_override = intervention_result.get("macro_override")
         if macro_override:
+            self.macro_override = macro_override  # Set the override flag
             self.current_macro = macro_override
             # Clear current targets to force re-evaluation with new macro
             self.current_onion_target = None
@@ -394,6 +396,10 @@ class SimpleHandcodedAgentHumanGuidance:
                 else:
                     # All pots are full/cooking, get a dish to prepare for soup
                     return "GET_DISH"
+            elif ego_item and ego_item != "soup":
+                # Holding something that's not soup - drop it off
+                print(f"[HMS] {self.agent_name} holding {ego_item} (not soup) - selecting DROP_OFF macro")
+                return "DROP_OFF"
             else:
                 # Not holding anything - decide what to do
                 if pot_states['any_pot_ready']:
@@ -894,6 +900,52 @@ class SimpleHandcodedAgentHumanGuidance:
             # Stay in place if no better position
             return 0
     
+    def _get_nearest_wall_tile(self, current_pos):
+        """Find the nearest wall tile ('X') to drop off objects."""
+        min_distance = float('inf')
+        nearest_wall = None
+        
+        # Get terrain matrix
+        terrain = self.mdp.terrain_mtx
+        height, width = len(terrain), len(terrain[0])
+        
+        for y in range(height):
+            for x in range(width):
+                if terrain[y][x] == 'X':  # Wall tile
+                    wall_pos = (x, y)
+                    distance = self._manhattan_distance(current_pos, wall_pos)
+                    if distance < min_distance:
+                        min_distance = distance
+                        nearest_wall = wall_pos
+        
+        return nearest_wall
+    
+    def _drop_off_with_astar(self, ego_pos, ego_orientation, state):
+        """Drop off current object at nearest wall tile."""
+        print(f"[DROP_OFF] {self.agent_name} at {ego_pos} trying to drop off object")
+        
+        # Find nearest wall tile
+        nearest_wall = self._get_nearest_wall_tile(ego_pos)
+        if not nearest_wall:
+            print(f"[DROP_OFF] {self.agent_name} ERROR: No wall tiles found!")
+            return 0
+        
+        print(f"[DROP_OFF] {self.agent_name} targeting wall tile at {nearest_wall}")
+        
+        # Check if we're adjacent to the wall
+        if self._is_adjacent(ego_pos, nearest_wall):
+            if self._is_facing_target(ego_pos, ego_orientation, nearest_wall):
+                print(f"[DROP_OFF] {self.agent_name} facing wall at {nearest_wall} - INTERACTING to drop off!")
+                # Clear macro override after successful drop-off
+                self.macro_override = None
+                return 5  # INTERACT
+            else:
+                print(f"[DROP_OFF] {self.agent_name} turning to face wall at {nearest_wall}")
+                return self._get_direction_to_face(ego_pos, nearest_wall)
+        else:
+            print(f"[DROP_OFF] {self.agent_name} not adjacent to wall, pathfinding to {nearest_wall}")
+            return self._follow_astar_path_to_target(ego_pos, nearest_wall, state)
+    
     def _execute_macro_with_astar(self, macro, state):
         """Execute macro action using A* pathfinding."""
         ego = state.players[self.agent_idx]
@@ -913,6 +965,8 @@ class SimpleHandcodedAgentHumanGuidance:
                 return self._serve_soup_with_astar(ego_pos, ego_orientation, state)
             elif macro == "WAIT_FOR_COOKING":
                 return self._wait_for_cooking(ego_pos, ego_orientation, state)
+            elif macro == "DROP_OFF":
+                return self._drop_off_with_astar(ego_pos, ego_orientation, state)
             else:
                 return self._get_onion_with_astar(ego_pos, ego_orientation, state)
         except Exception as e:
@@ -929,10 +983,10 @@ class SimpleHandcodedAgentHumanGuidance:
             self.intervention_steps_remaining -= 1
             
             if self.intervention_steps_remaining == 0:
-                self.next_action_override = None  # Clear after 2 steps
+                self.next_action_override = None  # Clear after duration steps
                 print(f"⚡ Using intervention override action: {action} (final step)")
             else:
-                print(f"⚡ Using intervention override action: {action} (step {2 - self.intervention_steps_remaining}/2)")
+                print(f"⚡ Using intervention override action: {action} (step {self.intervention_steps_remaining} remaining)")
             
             # If we need to replan after this override action
             if self.replan_after_override and self.intervention_steps_remaining == 0:
@@ -959,8 +1013,12 @@ class SimpleHandcodedAgentHumanGuidance:
             ego_orientation = ego.orientation
             ego_item = self._get_item_name(ego.get_object()) if ego.has_object() else "none"
             
-            # Get HMS decision
-            macro_decision = self.hms_decision(state)
+            # Get HMS decision (unless we have a macro override from intervention)
+            if hasattr(self, 'macro_override') and self.macro_override:
+                macro_decision = self.macro_override
+                print(f"🎯 Using macro override: {macro_decision}")
+            else:
+                macro_decision = self.hms_decision(state)
             self.current_macro = macro_decision
             
             # Execute macro with A* pathfinding

@@ -1,8 +1,8 @@
 {
     "grid":  """XXSPDXX
-                X  1  X
                 X     X
-                O     O
+                X     X
+                O1    O
                 X     X
                 X  2  X
                 XXDPSXX""",

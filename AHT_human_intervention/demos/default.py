@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """
-LLM Human Intervention Demo - Sudden FIRE Hazard
+LLM Human Intervention Demo
 
-At timestep 5, a FIRE hazard ('F') appears on a random empty corridor tile (' ') and persists for 5 steps (t in [10, 14]).
-If any agent steps onto the FIRE tile during its active window, the episode ends immediately (game over).
-The env is not modified; FIRE is an overlay-only hazard handled in the demo loop and renderer.
-
-Press 'p' to pause and input natural language commands for Player 0 via the LLM intervention system.
+Test Simple Hand Coded Agent (Player 0) with Onion Specialist (Player 1) with LLM-based human intervention.
+Press 'p' to pause and input natural language commands that are processed by OpenAI GPT-4.
 """
 
 import os
@@ -14,7 +11,7 @@ import sys
 import pygame
 import numpy as np
 import random
-from collections import deque
+import time
 
 # Ensure module imports work when run from repo root or directly
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -27,84 +24,70 @@ from shared.envs.envs.overcooked.overcooked_ai_py.mdp.overcooked_env import Over
 from shared.envs.envs.overcooked.overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 from shared.envs.envs.overcooked.overcooked_ai_py.mdp.actions import Action, Direction
 from shared.envs.envs.overcooked.overcooked_ai_py.visualization.state_visualizer import StateVisualizer
-from shared.envs.envs.overcooked.overcooked_ai_py.static import GRAPHICS_DIR
 
 # Import agents
 from shared.agents import SimpleHandcodedAgent, SimpleHandcodedAgentHumanGuidance
-
 
 def convert_action(a):
     """Convert action to proper format."""
     if isinstance(a, (Direction, Action)):
         return a
     if isinstance(a, int):
-        mapping = {0: Action.STAY, 1: Direction.EAST, 2: Direction.SOUTH,
-                   3: Direction.NORTH, 4: Direction.WEST, 5: Action.INTERACT}
+        mapping = {0: Action.STAY, 1: Direction.EAST, 2: Direction.SOUTH, 
+                  3: Direction.NORTH, 4: Direction.WEST, 5: Action.INTERACT}
         return mapping.get(a, Action.STAY)
     return Action.STAY
 
-
-def get_fire_position():
-    return (2, 3)
-
-
 def main():
-    """Main demo with LLM intervention focused on sudden FIRE hazard."""
-    print("🔥 LLM HUMAN INTERVENTION DEMO - FIRE HAZARD")
-    print("Player 0: Simple A* Agent (LLM INTERVENTION TARGET)")
-    print("Player 1: Simple A* Agent (Autonomous)")
-    print("Controls: 'p' to intervene, SPACE to pause, ESC to quit")
+    """Main demo with LLM intervention."""
+    print("🤖 LLM HUMAN INTERVENTION DEMO")
+    print("Player 0: Simple A* Agent (Dumber) - LLM INTERVENTION TARGET")
+    print("Player 1: Onion Specialist Agent (Autonomous)")
+    print("Controls: 'p' = Pause & Intervention, SPACE = Pause, ESC = Quit, 'n' = Next Layout")
     print("=" * 70)
-
-    # Use a corridor-like layout; schelling works well
-    layouts = ["schelling"]
-    layout_index = 0
-
+    
+    # Recommended layouts for intervention testing
+    layouts = ["random3"]
+    # Start on scenario2 per request
+    layout_index = layouts.index("random3")
+    
     def initialize_layout(layout_name):
         """Initialize environment with given layout."""
         print(f"\n🎯 Initializing layout: {layout_name}")
         mdp = OvercookedGridworld.from_layout_name(layout_name)
+        
+        # Use default starts defined in the layout for all layouts
+        
+        # Show the actual start positions parsed from the layout
         print(f"🎯 Using start positions: {mdp.start_player_positions}")
         env = OvercookedEnv(mdp, horizon=500)
         env.reset()
         state = env.state
-
+        
         # Initialize agents
         agent0 = SimpleHandcodedAgentHumanGuidance(mdp, agent_idx=0, agent_name="SimpleHandcodedAgentHumanGuidance")
-        agent1 = SimpleHandcodedAgentHumanGuidance(mdp, agent_idx=1, agent_name="SimpleHandcodedAgentHumanGuidance")
+        agent1 = SimpleHandcodedAgent(mdp, agent_idx=1, agent_name="SimpleHandcoded")
+        
         return mdp, env, state, agent0, agent1
-
+    
     # Initialize first layout
     layout = layouts[layout_index]
     mdp, env, state, agent0, agent1 = initialize_layout(layout)
-
+    
     # Initialize LLM intervention system
     intervention_system = LLMInterventionSystem()
-
+    
     # Initialize pygame
     pygame.init()
     screen = pygame.display.set_mode((1400, 900))
-    pygame.display.set_caption("LLM Human Intervention Demo - FIRE Hazard")
+    pygame.display.set_caption("LLM Human Intervention Demo")
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 24)
     small_font = pygame.font.Font(None, 18)
-
+    
     # Initialize visualizer
     visualizer = StateVisualizer()
-
-    # Load fire icon (robust path via engine GRAPHICS_DIR) with fallback
-    fire_icon = None
-    fire_icon_path = os.path.join(GRAPHICS_DIR, 'fire.png')
-    try:
-        if os.path.exists(fire_icon_path):
-            tmp_icon = pygame.image.load(fire_icon_path)
-            fire_icon = pygame.transform.scale(tmp_icon, (visualizer.tile_size, visualizer.tile_size))
-            print(f"🖼️ Loaded fire icon from {fire_icon_path}")
-        else:
-            print(f"⚠️ Fire icon not found at {fire_icon_path}; using fallback overlay")
-    except Exception as e:
-        print(f"⚠️ Failed to load fire icon at {fire_icon_path}: {e}; using fallback overlay")
-
+    
     # Game state
     step_count = 0
     running = True
@@ -113,34 +96,25 @@ def main():
     intervention_text = ""
     last_intervention = None
     soup_deliveries = 0
-
-    # FIRE hazard controls (overlay only)
-    fire_start_t = 100
-    fire_duration = 200
-    fire_pos = None
-
-    # Precompute since we do not modify env: for rendering overlay placement
-    grid_tile_size = visualizer.tile_size
-
-    while running and step_count < 300:
+    
+    while running and step_count < 200:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
                 if intervention_mode:
                     if event.key == pygame.K_RETURN:
+                        # Process intervention
                         if intervention_text.strip():
                             print(f"\n👤 Human: '{intervention_text}'")
+                            
+                            # Get SimpleHandCoded agent state for context (Player 0 - the "dumb" agent)
                             agent_state = agent0.get_intervention_state(state)
-
-                            # Add FIRE context for LLM
-                            is_fire_active = fire_pos is not None and (fire_start_t <= step_count <= fire_start_t + fire_duration - 1)
-                            agent_state['fire_active'] = bool(is_fire_active)
-                            agent_state['fire_pos'] = fire_pos
-                            agent_state['fire_window'] = (fire_start_t, fire_start_t + fire_duration - 1)
-
+                            
+                            # Process with LLM
                             result = intervention_system.process_intervention(intervention_text, agent_state)
-
+                            
+                            # Convert InterventionResult to dict for compatibility
                             if result:
                                 result_dict = {
                                     'action_override': result.action_override,
@@ -149,7 +123,8 @@ def main():
                                     'reasoning': result.reasoning
                                 }
                                 print(f"🤖 LLM Intervention Result: {result_dict}")
-                                # Apply ONLY to Player 0
+                                
+                                # Apply intervention to SimpleHandCoded agent (Player 0) only if LLM succeeded
                                 agent0.apply_intervention(result_dict)
                                 last_intervention = {
                                     'command': intervention_text,
@@ -163,6 +138,7 @@ def main():
                                     'result': None,
                                     'step': step_count
                                 }
+                        
                         intervention_mode = False
                         intervention_text = ""
                         paused = False
@@ -179,52 +155,62 @@ def main():
                     elif event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key == pygame.K_p:
+                        # Enter intervention mode
                         intervention_mode = True
                         intervention_text = ""
                         paused = True
                         print(f"\n🎤 INTERVENTION MODE: Type your command and press ENTER")
-
-        # Activate FIRE at start time
-        if fire_pos is None and step_count == fire_start_t:
-            fire_pos = get_fire_position()
-            print(f"🔥 FIRE spawned at {fire_pos} for {fire_duration} steps (t={fire_start_t}..{fire_start_t+fire_duration-1})")
-
-        # FIRE now persists until the end of the episode (no auto-extinguish)
-
+                    elif event.key == pygame.K_n:
+                        # Switch to next layout
+                        layout_index = (layout_index + 1) % len(layouts)
+                        layout = layouts[layout_index]
+                        print(f"\n🔄 Switching to layout: {layout}")
+                        
+                        # Reinitialize with new layout
+                        mdp, env, state, agent0, agent1 = initialize_layout(layout)
+                        
+                        # Reset counters
+                        step_count = 0
+                        soup_deliveries = 0
+                        last_intervention = None
+                        paused = False
+                        intervention_mode = False
+                        intervention_text = ""
+        
         if not paused and not intervention_mode:
             # Get actions from both agents
             action0 = agent0.get_action(state)
             action1 = agent1.get_action(state)
-
+            
+            # Convert to proper format
             joint_action = (convert_action(action0), convert_action(action1))
+            
+            # Debug first 11 steps: show positions and actions
+            if step_count <= 10:
+                p0 = state.players[0].position
+                p1 = state.players[1].position
+                print(f"[t={step_count}] P0 pos={p0} act={action0} | P1 pos={p1} act={action1}")
 
             # Step environment
             state, reward, done, info = env.step(joint_action)
             step_count += 1
 
-            # FIRE collision check (overlay logic)
-            if fire_pos is not None and (fire_start_t <= step_count - 1 <= fire_start_t + fire_duration - 1):
-                p_positions = state.player_positions
-                if fire_pos == p_positions[0]:
-                    print(f"💥 GAME OVER: Player 0 stepped into FIRE at {fire_pos} (t={step_count})")
-                    running = False
-
-            # Early debug prints
-            if step_count <= 12:
-                p0 = state.players[0].position
-                p1 = state.players[1].position
-                print(f"[t={step_count}] P0 pos={p0} act={action0} | P1 pos={p1} act={action1}")
-
-            # History for LLM
+            if step_count <= 11:
+                p0n = state.players[0].position
+                p1n = state.players[1].position
+                print(f"        -> after step: P0 pos={p0n} | P1 pos={p1n}")
+            
+            # Add to intervention history
             ego_item = agent0._get_item_name(state.players[0].get_object()) if state.players[0].has_object() else "none"
             mate_item = agent0._get_item_name(state.players[1].get_object()) if state.players[1].has_object() else "none"
-
+            
+            # Check if there was an intervention in this step
             current_intervention = None
             current_intervention_result = None
             if last_intervention and last_intervention['step'] == step_count - 1:
                 current_intervention = last_intervention['command']
                 current_intervention_result = last_intervention['result']
-
+            
             intervention_system.add_to_history(
                 step=step_count,
                 ego_action=action0,
@@ -236,67 +222,66 @@ def main():
                 intervention=current_intervention,
                 intervention_result=current_intervention_result
             )
-
+            
+            # Track successful soup deliveries
+            # Check if agent was holding soup in previous step and now isn't (indicating successful delivery)
+            if hasattr(env, 'prev_agent_state') and env.prev_agent_state:
+                prev_holding_soup = env.prev_agent_state.get('holding_soup', False)
+                current_holding_soup = state.players[0].has_object() and agent0._get_item_name(state.players[0].get_object()) == "soup"
+                
+                if prev_holding_soup and not current_holding_soup:
+                    soup_deliveries += 1
+                    print(f"🎉 SOUP DELIVERED! Successful delivery #{soup_deliveries}")
+            
+            # Store current state for next comparison
+            env.prev_agent_state = {
+                'holding_soup': state.players[0].has_object() and agent0._get_item_name(state.players[0].get_object()) == "soup"
+            }
+            
+            # Debug: Print delivery info every 50 steps
+            if step_count % 50 == 0:
+                print(f"🔍 DEBUG Step {step_count}: Successful deliveries: {soup_deliveries}")
+        
         # Render the game
         screen.fill((255, 255, 255))
-
+        
         # Render Overcooked state
         img_surface = visualizer.render_state(state, mdp.terrain_mtx)
         screen.blit(img_surface, (10, 10))
-
-        # Draw FIRE overlay if active
-        overlay_active = fire_pos is not None and (fire_start_t <= step_count <= fire_start_t + fire_duration - 1)
-        if overlay_active and fire_pos is not None:
-            tile_x = 10 + fire_pos[0] * visualizer.tile_size
-            tile_y = 10 + fire_pos[1] * visualizer.tile_size
-            if fire_icon is not None:
-                # Blit the fire icon directly
-                screen.blit(fire_icon, (tile_x, tile_y))
-            else:
-                # Fallback: semi-transparent red tile with 'F'
-                overlay = pygame.Surface((visualizer.tile_size, visualizer.tile_size), pygame.SRCALPHA)
-                overlay.fill((255, 0, 0, 120))
-                screen.blit(overlay, (tile_x, tile_y))
-                text_surface = font.render("F", True, (255, 255, 255))
-                screen.blit(text_surface, (tile_x + visualizer.tile_size // 3, tile_y + visualizer.tile_size // 5))
-
-        # Render HUD/info
+        
+        # Render agent info
         info_y = 420
         agent_info = [
-            f"Step: {step_count}/300",
-            f"Layout: {layout}",
+            f"Step: {step_count}/200",
+            f"Layout: {layout} ({layout_index + 1}/{len(layouts)})",
             f"Player 0 (SimpleHandcoded): {agent0.heuristic}",
-            f"Player 1 (SimpleHandcoded): {agent1.heuristic}",
+            f"Player 1 (OnionSpec): {agent1.heuristic}",
+            f"Successful Deliveries: {soup_deliveries}",
             "",
-            "🔥 FIRE Hazard Demo",
-            "Controls: 'p'=Intervention, SPACE=Pause, ESC=Quit",
+            "🎮 LLM Human Intervention Demo",
+            "Controls: 'p'=Intervention, SPACE=Pause, ESC=Quit, 'n'=Next Layout",
             "",
         ]
-
-        if fire_pos is not None:
-            agent_info.extend([
-                f"🔥 FIRE: Active at {fire_pos} (t={fire_start_t}-{fire_start_t+fire_duration-1})",
-                "Avoid stepping onto the fire icon!",
-                "",
-            ])
-
+        
+        # Add intervention status
         if intervention_mode:
             agent_info.extend([
                 "🎤 INTERVENTION MODE - Type command:",
                 f"'{intervention_text}_'",
                 "",
-                "Target: Player 0",
+                "Target: SimpleAStar Agent (Player 0)",
             ])
         elif last_intervention:
             cmd = last_intervention.get('command', '')
             step_meta = last_intervention.get('step', '?')
             res = last_intervention.get('result')
             if res:
+                cmd_type = res.get('command_type', 'unknown')
                 reasoning = (res.get('reasoning') or '')[:50]
                 agent_info.extend([
                     f"Last intervention (Step {step_meta}):",
                     f"👤 '{cmd}'",
-                    f"🤖 {reasoning}...",
+                    f"🤖 {cmd_type} - {reasoning}...",
                     "",
                 ])
             else:
@@ -306,52 +291,43 @@ def main():
                     "🤖 failed to parse/process",
                     "",
                 ])
-
+        
         for i, line in enumerate(agent_info):
-            color = (0, 0, 0)
-            if "FIRE" in line:
-                color = (200, 0, 0)
-            elif "Player 0" in line:
-                color = (0, 100, 0)
-            elif "Player 1" in line:
-                color = (200, 0, 0)
-            elif "🎤" in line:
-                color = (0, 0, 200)
-            text_surface = font.render(line[:80], True, color)
+            color = (0, 100, 0) if "Player 0" in line else (200, 0, 0) if "Player 1" in line else (0, 0, 200) if "🎤" in line else (0, 0, 0)
+            text_surface = font.render(line[:80], True, color)  # Truncate long lines
             screen.blit(text_surface, (10, info_y + i * 26))
-
-        # Context when in intervention mode
+        
+        # Show current agent state for intervention context
         if intervention_mode:
             context_y = info_y + len(agent_info) * 26 + 20
             agent_state = agent0.get_intervention_state(state)
-            is_fire_active = fire_pos is not None and (fire_start_t <= step_count <= fire_start_t + fire_duration - 1)
             context_info = [
                 "🤖 SimpleAStar Agent Context (Player 0):",
                 f"Position: {agent_state['agent_pos']}",
                 f"Target: {agent_state['target_pos']}",
                 f"Macro: {agent_state['current_macro']}",
                 f"Holding: {agent_state['holding_item']}",
-                f"FIRE Active: {is_fire_active}",
-                f"FIRE Pos: {fire_pos}",
             ]
+            
             for i, line in enumerate(context_info):
                 text_surface = small_font.render(line, True, (100, 100, 100))
                 screen.blit(text_surface, (10, context_y + i * 20))
-
+        
         if paused and not intervention_mode:
             pause_text = font.render("PAUSED - Press SPACE to continue, 'p' for intervention", True, (255, 0, 0))
             screen.blit(pause_text, (10, 10))
-
+        
         pygame.display.flip()
-        pygame.event.pump()
-        # Slow down demo for clarity
-        clock.tick(2)
-
+        clock.tick(1)  # Slow down demo for clearer visualization
+    
     pygame.quit()
-
-    print(f"\n📊 FIRE DEMO COMPLETED")
+    
+    print(f"\n📊 DEMO COMPLETED")
     print(f"Steps: {step_count}")
-
+    print(f"Successful soup deliveries: {soup_deliveries}")
+    if last_intervention:
+        result_type = "success" if last_intervention['result'] else "failed"
+        print(f"Last intervention: '{last_intervention['command']}' ({result_type})")
 
 if __name__ == "__main__":
     main()
