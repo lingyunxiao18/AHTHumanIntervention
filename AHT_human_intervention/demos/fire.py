@@ -308,17 +308,41 @@ def main():
                 ])
 
         for i, line in enumerate(agent_info):
-            color = (0, 0, 0)
+            # Fix color scheme: Player 0 (ego) = blue, Player 1 (teammate) = green
             if "FIRE" in line:
-                color = (200, 0, 0)
+                color = (255, 0, 0)  # Red for fire warnings
             elif "Player 0" in line:
-                color = (0, 100, 0)
+                color = (0, 0, 200)  # Blue for ego agent
             elif "Player 1" in line:
-                color = (200, 0, 0)
+                color = (0, 150, 0)  # Green for teammate
             elif "🎤" in line:
-                color = (0, 0, 200)
-            text_surface = font.render(line[:80], True, color)
-            screen.blit(text_surface, (10, info_y + i * 26))
+                color = (200, 0, 200)  # Purple for intervention
+            else:
+                color = (0, 0, 0)  # Black for other text
+            
+            # Remove truncation and use word wrapping for long lines
+            if len(line) > 100:
+                # Split long lines into multiple lines
+                words = line.split()
+                lines = []
+                current_line = ""
+                for word in words:
+                    if len(current_line + " " + word) <= 100:
+                        current_line += (" " + word) if current_line else word
+                    else:
+                        if current_line:
+                            lines.append(current_line)
+                        current_line = word
+                if current_line:
+                    lines.append(current_line)
+                
+                # Render each line
+                for j, sub_line in enumerate(lines):
+                    text_surface = font.render(sub_line, True, color)
+                    screen.blit(text_surface, (10, info_y + (i + j) * 26))
+            else:
+                text_surface = font.render(line, True, color)
+                screen.blit(text_surface, (10, info_y + i * 26))
 
         # Context when in intervention mode
         if intervention_mode:
@@ -330,7 +354,7 @@ def main():
                 f"Position: {agent_state['agent_pos']}",
                 f"Target: {agent_state['target_pos']}",
                 f"Macro: {agent_state['current_macro']}",
-                f"Holding: {agent_state['holding_item']}",
+                f"Holding: {agent_state['ego_item']}",
                 f"FIRE Active: {is_fire_active}",
                 f"FIRE Pos: {fire_pos}",
             ]

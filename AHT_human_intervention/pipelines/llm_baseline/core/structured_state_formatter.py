@@ -2,6 +2,7 @@
 """
 Structured state formatter for LLM baseline pipeline.
 Creates the JSON-like structured descriptions as requested.
+Layout-agnostic version that parses actual layout files.
 """
 
 import sys
@@ -11,12 +12,70 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../../..'))
 import json
 from typing import Dict, List, Any, Optional, Tuple
 
+def parse_layout_for_objects(layout_name: str) -> Dict[str, List[Tuple[int, int]]]:
+    """
+    Parse layout file to extract object locations.
+    
+    Args:
+        layout_name: Name of the layout (e.g., 'random3', 'simple')
+        
+    Returns:
+        Dictionary with object type -> list of positions
+    """
+    try:
+        from shared.envs.envs.overcooked.overcooked_ai_py.data.layouts import read_layout_dict
+        
+        layout_dict = read_layout_dict(layout_name)
+        grid = layout_dict["grid"]
+        
+        # Parse grid into 2D array
+        grid_lines = [line.strip() for line in grid.split("\n") if line.strip()]
+        height = len(grid_lines)
+        width = len(grid_lines[0]) if grid_lines else 0
+        
+        # Find object locations
+        onion_locs = []
+        dish_locs = []
+        serve_locs = []
+        pot_locs = []
+        
+        for y, line in enumerate(grid_lines):
+            for x, char in enumerate(line):
+                if char == 'O':  # Onion dispenser
+                    onion_locs.append((x, y))
+                elif char == 'D':  # Dish dispenser
+                    dish_locs.append((x, y))
+                elif char == 'S':  # Serving station
+                    serve_locs.append((x, y))
+                elif char == 'P':  # Pot
+                    pot_locs.append((x, y))
+        
+        return {
+            'onion_locations': onion_locs,
+            'dish_locations': dish_locs,
+            'serve_locations': serve_locs,
+            'pot_locations': pot_locs,
+            'scene_size': (width, height)
+        }
+        
+    except Exception as e:
+        print(f"Warning: Could not parse layout '{layout_name}': {e}")
+        # Return empty locations as fallback
+        return {
+            'onion_locations': [],
+            'dish_locations': [],
+            'serve_locations': [],
+            'pot_locations': [],
+            'scene_size': (8, 5)
+        }
+
 def create_structured_state_description(state_info: Dict[str, Any], 
                                        command: str = "", 
                                        grounding: Dict = None,
                                        macro_label: str = "") -> Dict[str, Any]:
     """
     Create structured state description from parsed state information.
+    Layout-agnostic version that dynamically parses layout files.
     
     Args:
         state_info: Dictionary with parsed state information
@@ -28,27 +87,42 @@ def create_structured_state_description(state_info: Dict[str, Any],
         Structured description in requested format
     """
     
-    # Extract state information (with defaults for missing data)
+    # Extract state information
     scene_size = state_info.get('scene_size', (8, 5))
-    ego_pos = state_info.get('ego_pos', (2, 3))
+    ego_pos = state_info.get('ego_pos', 'unknown')
     ego_facing = state_info.get('ego_facing', 'N')
     ego_item = state_info.get('ego_item', 'none')
     
-    mate_pos = state_info.get('mate_pos', (5, 1))
+    mate_pos = state_info.get('mate_pos', 'unknown')
     mate_facing = state_info.get('mate_facing', 'W')
     mate_item = state_info.get('mate_item', 'none')
     
+    # Get layout name and parse object locations
+    layout_name = state_info.get('layout_name', state_info.get('layout', 'unknown'))
+    layout_objects = parse_layout_for_objects(layout_name)
+    
+    # Use parsed locations or fallback to provided ones
+    onion_locs = state_info.get('onion_locations', layout_objects['onion_locations'])
+    dish_locs = state_info.get('dish_locations', layout_objects['dish_locations'])
+    serve_locs = state_info.get('serve_locations', layout_objects['serve_locations'])
+    pot_locs = layout_objects['pot_locations']
+    
+    # Ensure all locations are lists (handle None values)
+    onion_locs = onion_locs if onion_locs is not None else []
+    dish_locs = dish_locs if dish_locs is not None else []
+    serve_locs = serve_locs if serve_locs is not None else []
+    pot_locs = pot_locs if pot_locs is not None else []
+    
+    # Get pot states from state_info or create default empty states
+    pot_states = state_info.get('pot_states', [])
+    if pot_states is None:
+        pot_states = []
+    if not pot_states and pot_locs:
+        # Create default empty pot states for all pots in layout
+        pot_states = [{'pos': pos, 'state': 'empty'} for pos in pot_locs]
+    
     # Determine goal based on current state
     goal = determine_goal(ego_item, state_info)
-    
-    # Get object locations
-    onion_locs = state_info.get('onion_locations', [(3, 4), (4, 4)])
-    dish_locs = state_info.get('dish_locations', [(0, 2)])
-    serve_locs = state_info.get('serve_locations', [(7, 2)])
-    pot_states = state_info.get('pot_states', [
-        {'pos': (3, 0), 'state': 'empty'},
-        {'pos': (4, 0), 'state': 'empty'}
-    ])
     
     # Build state text components
     scene_part = f"[SCENE] size {scene_size[0]}x{scene_size[1]}"
@@ -57,9 +131,9 @@ def create_structured_state_description(state_info: Dict[str, Any],
     goal_part = f"[GOAL] {goal} | [OPT_CMD]"
     
     # Format object locations
-    onion_part = "[ONION] " + "".join([f"({x},{y})" for x, y in onion_locs])
-    dish_part = "[DISH] " + "".join([f"({x},{y})" for x, y in dish_locs])
-    serve_part = "[SERVE] " + "".join([f"({x},{y})" for x, y in serve_locs])
+    onion_part = "[ONION] " + " ".join([f"({x},{y})" for x, y in onion_locs])
+    dish_part = "[DISH] " + " ".join([f"({x},{y})" for x, y in dish_locs])
+    serve_part = "[SERVE] " + " ".join([f"({x},{y})" for x, y in serve_locs])
     
     # Format pots
     pot_parts = []
@@ -141,133 +215,3 @@ def parse_structured_state_for_hms(structured_state: Dict[str, Any]) -> Dict[str
         "near_serve": near_serve,
         "pots_cooking": pots_cooking
     }
-
-def create_mock_random3_states() -> List[Dict[str, Any]]:
-    """Create mock states for random3 layout testing."""
-    return [
-        {
-            # Initial state - need to get onion
-            'scene_size': (8, 5),
-            'ego_pos': (2, 3),
-            'ego_facing': 'N',
-            'ego_item': 'none',
-            'mate_pos': (5, 1),
-            'mate_facing': 'W', 
-            'mate_item': 'none',
-            'onion_locations': [(3, 4), (4, 4)],
-            'dish_locations': [(0, 2)],
-            'serve_locations': [(7, 2)],
-            'pot_states': [
-                {'pos': (3, 0), 'state': 'empty'},
-                {'pos': (4, 0), 'state': 'empty'}
-            ]
-        },
-        {
-            # Holding onion - need to go to pot
-            'scene_size': (8, 5),
-            'ego_pos': (3, 4),
-            'ego_facing': 'N',
-            'ego_item': 'onion',
-            'mate_pos': (5, 1),
-            'mate_facing': 'W',
-            'mate_item': 'none',
-            'onion_locations': [(3, 4), (4, 4)],
-            'dish_locations': [(0, 2)],
-            'serve_locations': [(7, 2)],
-            'pot_states': [
-                {'pos': (3, 0), 'state': 'empty'},
-                {'pos': (4, 0), 'state': '1/3'}
-            ]
-        },
-        {
-            # Pot ready, holding dish - take soup
-            'scene_size': (8, 5),
-            'ego_pos': (0, 2),
-            'ego_facing': 'E',
-            'ego_item': 'dish',
-            'mate_pos': (5, 1),
-            'mate_facing': 'W',
-            'mate_item': 'none',
-            'onion_locations': [(3, 4), (4, 4)],
-            'dish_locations': [(0, 2)],
-            'serve_locations': [(7, 2)],
-            'pot_states': [
-                {'pos': (3, 0), 'state': 'ready'},
-                {'pos': (4, 0), 'state': '2/3'}
-            ]
-        }
-    ]
-
-def test_structured_format_with_hms():
-    """Test the structured format with HMS integration."""
-    print("🧪 Testing Structured Format with HMS Integration")
-    print("=" * 55)
-    
-    mock_states = create_mock_random3_states()
-    
-    for i, state_info in enumerate(mock_states, 1):
-        print(f"\n--- Test Case {i} ---")
-        
-        # Create structured description
-        structured_desc = create_structured_state_description(
-            state_info,
-            command="",  # No command for HMS-only test
-            grounding={},
-            macro_label=""
-        )
-        
-        print("📋 Structured State:")
-        print(json.dumps(structured_desc, indent=2))
-        
-        # Parse for HMS
-        hms_input = parse_structured_state_for_hms(structured_desc)
-        print(f"\n🔍 HMS Input:")
-        for key, value in hms_input.items():
-            print(f"  {key}: {value}")
-        
-        # Simple HMS decision (using the logic from our test)
-        holding = hms_input["holding"]
-        any_pot_ready = hms_input["any_pot_ready"]
-        any_pot_has_space = hms_input["any_pot_has_space"]
-        pots_cooking = hms_input["pots_cooking"]
-        
-        if holding == "soup":
-            hms_decision = "GO_TO_SERVE"
-        elif holding == "dish" and any_pot_ready:
-            hms_decision = "TAKE_SOUP"
-        elif holding == "dish" and pots_cooking:
-            hms_decision = "WAIT_COOK"
-        elif holding == "onion":
-            hms_decision = "GO_TO_POT"
-        elif any_pot_ready:
-            hms_decision = "GO_TO_DISH"
-        elif any_pot_has_space:
-            hms_decision = "GO_TO_ONION"
-        else:
-            hms_decision = "WAIT_COOK"
-        
-        print(f"\n🤖 HMS Decision: {hms_decision}")
-        print("-" * 55)
-    
-    print("\n✅ Structured format working with HMS!")
-    return True
-
-if __name__ == "__main__":
-    print("🚀 Structured State Formatter for LLM Baseline")
-    print("🎯 Testing with random3 layout format")
-    
-    success = test_structured_format_with_hms()
-    
-    if success:
-        print(f"\n🎉 All tests passed!")
-        print(f"✅ Structured state format implemented")
-        print(f"✅ HMS integration working")
-        print(f"✅ Ready for random3 layout testing")
-        
-        print(f"\n📋 Integration Points:")
-        print(f"1. Use create_structured_state_description() for state formatting")
-        print(f"2. Use parse_structured_state_for_hms() for HMS compatibility")
-        print(f"3. Add real environment state extraction")
-        print(f"4. Test with actual random3 layout")
-    else:
-        print(f"\n❌ Tests failed")

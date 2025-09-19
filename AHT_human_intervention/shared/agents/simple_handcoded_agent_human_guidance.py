@@ -203,16 +203,49 @@ class SimpleHandcodedAgentHumanGuidance:
             if obj_name in ["onion", "dish", "pot", "serving_counter"]:
                 objects[obj_pos] = obj_name
         
+        # Convert pot_states to proper format
+        formatted_pot_states = []
+        for pot_state_str in pot_states:
+            parts = pot_state_str.split()
+            if len(parts) >= 2:
+                pos_str = parts[0]
+                state_str = ' '.join(parts[1:])
+                # Parse position from string like "(3,0)"
+                try:
+                    pos = eval(pos_str)  # Convert "(3,0)" to (3,0)
+                    formatted_pot_states.append({'pos': pos, 'state': state_str})
+                except:
+                    formatted_pot_states.append({'pos': (0, 0), 'state': 'unknown'})
+        
         return {
             'agent_pos': ego_pos,
             'target_pos': target_pos,
             'current_macro': self.current_macro,
-            'holding_item': ego_item,
+            'ego_item': ego_item,  # Renamed from holding_item for consistency
             'state_text': state_text,
             'layout': layout_name,
             'terrain': terrain,
             'objects': objects,
-            'mate_pos': mate_pos
+            'mate_pos': mate_pos,
+            # Additional fields for layout-agnostic formatter
+            'scene_size': (width, height),
+            'agent_orient': ego_facing,
+            'mate_orient': mate_facing,
+            'mate_item': mate_item,
+            'onion_locations': onion_locs,
+            'dish_locations': dish_locs,
+            'serve_locations': serve_locs,
+            'pot_states': formatted_pot_states,
+            # Template-specific fields
+            't': getattr(state, 'timestep', 0),  # Time step
+            'onion_disp_positions': onion_locs,
+            'dish_disp_position': dish_locs[0] if dish_locs else 'unknown',
+            'pot_summaries': '; '.join([f"{state['pos']}: {state['state']}" for state in formatted_pot_states]) if formatted_pot_states else 'none',
+            'serve_position': serve_locs[0] if serve_locs else 'unknown',
+            'blocked_tiles_or_none': 'none',  # Could be enhanced to detect blocked tiles
+            'items_list_or_none': 'none',  # Could be enhanced to list items on counters
+            'ego_macro_or_none': self.current_macro,
+            'brief_history_or_none': 'none',  # Could be enhanced to track recent events
         }
     
     def _get_valid_positions(self):
