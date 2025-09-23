@@ -95,7 +95,7 @@ class SimpleHandcodedAgentHumanGuidance:
         
         # Handle macro override
         macro_override = intervention_result.get("macro_override")
-        if macro_override:
+        if macro_override and macro_override != "NO_CHANGE":
             self.macro_override = macro_override  # Set the override flag
             self.current_macro = macro_override
             # Clear current targets to force re-evaluation with new macro
@@ -106,6 +106,10 @@ class SimpleHandcodedAgentHumanGuidance:
             self.replanning_needed = True
             print(f"🎯 Overriding macro to {macro_override}")
             print(f"🔄 Replanning triggered for new macro")
+        elif macro_override == "NO_CHANGE":
+            # Clear any existing macro override
+            self.macro_override = None
+            print(f"🎯 Macro override cleared - using normal HMS decision")
     
     def get_intervention_state(self, state):
         """Get current state information for LLM intervention."""
@@ -1047,7 +1051,7 @@ class SimpleHandcodedAgentHumanGuidance:
             ego_item = self._get_item_name(ego.get_object()) if ego.has_object() else "none"
             
             # Get HMS decision (unless we have a macro override from intervention)
-            if hasattr(self, 'macro_override') and self.macro_override:
+            if hasattr(self, 'macro_override') and self.macro_override and self.macro_override != "NO_CHANGE":
                 macro_decision = self.macro_override
                 print(f"🎯 Using macro override: {macro_decision}")
             else:

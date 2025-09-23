@@ -26,7 +26,7 @@ from shared.envs.envs.overcooked.overcooked_ai_py.mdp.actions import Action, Dir
 from shared.envs.envs.overcooked.overcooked_ai_py.visualization.state_visualizer import StateVisualizer
 
 # Import agents
-from shared.agents import SimpleHandcodedAgent, SimpleHandcodedAgentHumanGuidance
+from shared.agents import SimpleHandcodedAgentHumanGuidance
 
 def convert_action(a):
     """Convert action to proper format."""
@@ -66,7 +66,7 @@ def main():
         
         # Initialize agents
         agent0 = SimpleHandcodedAgentHumanGuidance(mdp, agent_idx=0, agent_name="SimpleHandcodedAgentHumanGuidance")
-        agent1 = SimpleHandcodedAgent(mdp, agent_idx=1, agent_name="SimpleHandcoded")
+        agent1 = SimpleHandcodedAgentHumanGuidance(mdp, agent_idx=1, agent_name="SimpleHandcodedAgentHumanGuidance")
         
         return mdp, env, state, agent0, agent1
     

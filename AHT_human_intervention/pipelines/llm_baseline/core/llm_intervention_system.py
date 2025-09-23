@@ -242,6 +242,9 @@ class LLMInterventionSystem:
                 temperature=0.1,
                 max_tokens=400
             )
+
+            print(system_content)
+            print(user_content)
             
             # Parse response
             result_text = response.choices[0].message.content.strip()
