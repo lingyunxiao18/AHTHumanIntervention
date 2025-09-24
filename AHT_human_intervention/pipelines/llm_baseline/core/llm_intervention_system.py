@@ -19,6 +19,17 @@ class InterventionResult:
     duration: Optional[int] = None  # How many steps to persist the override (default: 1 for actions, until completion for macros)
     reasoning: str = ""
 
+PROAGENT_ALLOWED_ML_ACTIONS = {
+    # canonical ProAgent medium-level actions
+    "pickup(onion)",
+    "pickup(dish)",
+    "put_onion_in_pot",
+    "fill_dish_with_soup",
+    "deliver_soup",
+    # wait(k) handled dynamically
+}
+
+
 class LLMInterventionSystem:
     """Handles human intervention commands using LLM for agent performance correction."""
     
@@ -51,6 +62,78 @@ class LLMInterventionSystem:
         # Interaction history tracking (kept for potential future use)
         self.interaction_history: List[Dict[str, Any]] = []
         self.max_history_length = 20
+
+    # =============== ProAgent-specific intervention (no templates required) ===============
+    def process_intervention_proagent(self, command: str) -> Optional[InterventionResult]:
+        """
+        Map free-text human command into a ProAgent medium-level action string.
+        Returns an InterventionResult with macro_override set to one of:
+          - "pickup(onion)"
+          - "pickup(dish)"
+          - "put_onion_in_pot"
+          - "fill_dish_with_soup"
+          - "deliver_soup"
+          - "wait(k)"  (k parsed; defaults to 1 if missing)
+
+        The caller should forward macro_override directly to
+        ProMediumLevelAgent.apply_human_intervention(macro_override).
+        """
+        try:
+            normalized = (command or "").strip().lower()
+            if not normalized:
+                return None
+
+            def parse_wait_val(text: str) -> int:
+                # extract a positive integer following 'wait'
+                import re
+                m = re.search(r"wait\s*\(?\s*(\d+)\s*\)?", text)
+                if m:
+                    try:
+                        return max(1, int(m.group(1)))
+                    except Exception:
+                        return 1
+                return 1
+
+            # Wait
+            if "wait" in normalized:
+                k = parse_wait_val(normalized)
+                return InterventionResult(macro_override=f"wait({k})", duration=k, reasoning="Mapped to ProAgent 'wait(k)'.")
+
+            # Deliver/serve
+            if any(w in normalized for w in ["deliver", "serve", "drop off", "hand in", "submit"]):
+                return InterventionResult(macro_override="deliver_soup", reasoning="Mapped to ProAgent 'deliver_soup'.")
+
+            # Fill soup with dish
+            if any(w in normalized for w in ["fill", "scoop", "take soup", "get soup"]):
+                return InterventionResult(macro_override="fill_dish_with_soup", reasoning="Mapped to ProAgent 'fill_dish_with_soup'.")
+
+            # Put onion in pot
+            if any(w in normalized for w in ["put onion", "place onion", "onion in pot", "add onion"]):
+                return InterventionResult(macro_override="put_onion_in_pot", reasoning="Mapped to ProAgent 'put_onion_in_pot'.")
+
+            # Pickup dish
+            if any(w in normalized for w in ["pickup dish", "pick up dish", "get dish", "grab dish", "take dish", "plate"]):
+                return InterventionResult(macro_override="pickup(dish)", reasoning="Mapped to ProAgent 'pickup(dish)'.")
+
+            # Pickup onion
+            if any(w in normalized for w in ["pickup onion", "pick up onion", "get onion", "grab onion", "take onion"]):
+                return InterventionResult(macro_override="pickup(onion)", reasoning="Mapped to ProAgent 'pickup(onion)'.")
+
+            # Fallback simple keywords
+            if "dish" in normalized:
+                return InterventionResult(macro_override="pickup(dish)", reasoning="Fallback mapping by 'dish' keyword.")
+            if "onion" in normalized:
+                return InterventionResult(macro_override="pickup(onion)", reasoning="Fallback mapping by 'onion' keyword.")
+            if "pot" in normalized:
+                return InterventionResult(macro_override="put_onion_in_pot", reasoning="Fallback mapping by 'pot' keyword.")
+            if any(w in normalized for w in ["serve", "deliver", "window"]):
+                return InterventionResult(macro_override="deliver_soup", reasoning="Fallback mapping by 'serve/deliver' keyword.")
+
+            # Last resort: wait(1)
+            return InterventionResult(macro_override="wait(1)", duration=1, reasoning="Unrecognized; default to 'wait(1)'.")
+        except Exception as e:
+            print(f"❌ ProAgent intervention mapping failed: {e}")
+            return None
     
     def _load_prompt_templates(self) -> None:
         """Load system and user prompt templates from sibling .txt files. Raises if missing."""
