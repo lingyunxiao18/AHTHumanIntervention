@@ -16,9 +16,11 @@ from shared.envs.envs.overcooked.overcooked_ai_py.mdp.overcooked_mdp import Over
 from shared.envs.envs.overcooked.overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from shared.envs.envs.overcooked.overcooked_ai_py.mdp.actions import Action, Direction
 from shared.envs.envs.overcooked.overcooked_ai_py.visualization.state_visualizer import StateVisualizer
+from shared.agents.onion_specialist_agent import OnionSpecialistAgent
 
 # Use ProAgent harness utilities and agent
 import utils as pro_utils  # type: ignore
+from proagent.proagent_with_intervention import ProAgentWithIntervention
 
 
 def convert_action(a):
@@ -61,9 +63,13 @@ def main():
     env = OvercookedEnv(mdp, horizon=500)
     env.reset()
 
-	# Agents: Player0 = ProAgent, Player1 = ProAgent
-    p0 = pro_utils.make_agent('ProAgent', mdp, layout, model='gpt-4.1-nano', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=True)
-    p1 = pro_utils.make_agent('ProAgent', mdp, layout, model='gpt-4.1-nano', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=True)
+	# Agents: Player0 = ProAgentWithIntervention, Player1 = OnionSpecialistAgent
+    # Create base ProAgent first to get MLAM, then wrap with intervention
+    base_agent = pro_utils.make_agent('ProAgent', mdp, layout, model='gpt-4.1-nano', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=True)
+    
+    # Create ProAgentWithIntervention using the same MLAM
+    p0 = ProAgentWithIntervention(base_agent.mlam, layout, model='gpt-4.1-nano', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=True, intervention_model='gpt-4.1-nano')
+    p1 = OnionSpecialistAgent(mdp, agent_idx=1, agent_name="OnionSpec")
     # Ensure agent indices are set for shared Agent API
     if hasattr(p0, 'set_agent_index'):
         p0.set_agent_index(0)
@@ -73,7 +79,7 @@ def main():
     # Pygame
     pygame.init()
     screen = pygame.display.set_mode((1200, 800))
-    pygame.display.set_caption('ProAgent Demo (Player0) + ProAgent (Player1)')
+    pygame.display.set_caption('ProAgentWithIntervention Demo (Player0) + OnionSpecialist (Player1)')
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 24)
     viz = StateVisualizer()
@@ -94,11 +100,15 @@ def main():
                     if event.key == pygame.K_RETURN:
                         cmd = intervention_text.strip()
                         if cmd:
-                            # Accept a raw ml_action like pickup(onion), put_onion_in_pot(), pickup(dish), fill_dish_with_soup(), deliver_soup(), wait(k)
+                            # Use the advanced intervention system
                             try:
-                                p0.apply_human_intervention(cmd)
-                            except Exception:
-                                pass
+                                success = p0.process_human_intervention(cmd)
+                                if success:
+                                    print(f"✅ Intervention processed: '{cmd}'")
+                                else:
+                                    print(f"❌ Intervention failed: '{cmd}'")
+                            except Exception as e:
+                                print(f"❌ Intervention error: {e}")
                         intervention_mode = False
                         intervention_text = ''
                         paused = False
@@ -160,7 +170,8 @@ def main():
         # UI
         info_lines = [
             f'Step: {step}',
-            'Controls: SPACE pause, p intervene (type ml_action), ESC quit',
+            'Controls: SPACE pause, p intervene (type command), ESC quit',
+            f'Interventions: {len(p0.get_intervention_history())}',
         ]
         if intervention_mode:
             info_lines += [f'Intervention: {intervention_text}_']
@@ -169,12 +180,11 @@ def main():
             screen.blit(txt, (10, 420 + i * 22))
 
         pygame.display.flip()
-        clock.tick(15)
+        clock.tick(5)
 
     pygame.quit()
 
 
 if __name__ == '__main__':
     main()
-
 

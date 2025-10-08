@@ -944,7 +944,7 @@ class OvercookedGridworld:
         # Checking for any players ending in same square
         if self.is_joint_position_collision(new_positions):
             try:
-                print(f"[COLLISION] same-tile: new_positions={new_positions} -> stay at old_positions={old_positions}")
+                pass  # print(f"[COLLISION] same-tile: new_positions={new_positions} -> stay at old_positions={old_positions}")
             except Exception:
                 pass
             return True
@@ -954,7 +954,7 @@ class OvercookedGridworld:
             p1_new, p2_new = new_positions[idx0], new_positions[idx1]
             if p1_new == p2_old and p1_old == p2_new:
                 try:
-                    print(f"[COLLISION] swap: {p1_old}<->{p2_old} attempted {p1_new}<->{p2_new} -> stay")
+                    pass  # print(f"[COLLISION] swap: {p1_old}<->{p2_old} attempted {p1_new}<->{p2_new} -> stay")
                 except Exception:
                     pass
                 return True
@@ -983,7 +983,7 @@ class OvercookedGridworld:
         """If agents collide, they stay at their old locations"""
         if self.is_transition_collision(old_positions, new_positions):
             try:
-                print(f"[COLLISION] handled: old={old_positions}, desired={new_positions} -> staying")
+                pass  # print(f"[COLLISION] handled: old={old_positions}, desired={new_positions} -> staying")
             except Exception:
                 pass
             return old_positions
