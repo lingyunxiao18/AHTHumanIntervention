@@ -40,8 +40,8 @@ try:
         AgentMemory,
         AdvancedLLMInterpreter,
         HumanMessage,
-        MacroStep,
         LLMClient,
+        PROAGENT_ALLOWED_ML_ACTIONS,
     )
 except ImportError:
     # Fallback for different import contexts
@@ -52,8 +52,8 @@ except ImportError:
         AgentMemory,
         AdvancedLLMInterpreter,
         HumanMessage,
-        MacroStep,
         LLMClient,
+        PROAGENT_ALLOWED_ML_ACTIONS,
     )
 
 # OpenAI key handling (copied from ProAgent)
@@ -81,7 +81,7 @@ class ProAgentWithIntervention:
     - Complete independence from base ProAgent class
     """
     
-    def __init__(self, mlam, layout, model='gpt-4.1-nano', 
+    def __init__(self, mlam, layout, model='gpt-4o-mini', 
                  auto_unstuck=False, controller_mode='new', 
                  agent_index=None, outdir=None, history_horizon=8, **kwargs):
         """
@@ -115,16 +115,14 @@ class ProAgentWithIntervention:
         # Layout prompt generation (copied from ProAgent)
         self.layout_prompt = self.generate_layout_prompt()
         
-        # Initialize interpreter-based planner
-        self.memory = AgentMemory()
+        # Initialize interpreter-based planner with MDP for layout facts
+        self.memory = AgentMemory(mdp=self.mdp)
         self.history_horizon = history_horizon
         
         # Initialize LLM client and interpreter
-        try:
-            from openai import OpenAI
-            self.llm_client = LLMClient(openai_client=OpenAI())
-        except Exception:
-            self.llm_client = LLMClient(openai_client=None)
+        from openai import OpenAI
+        # Initialize OpenAI client with API key loaded via openai_key.txt/env
+        self.llm_client = LLMClient(openai_client=OpenAI(api_key=self.openai_api_key()), model='gpt-4.1-mini')
         
         self.interpreter = AdvancedLLMInterpreter(
             self.llm_client, 
@@ -290,9 +288,6 @@ class ProAgentWithIntervention:
             for i in total_obj: 
                 if i not in count_states:        
                     kitchen_state_prompt += f'No counters have {i}. ' 
-
-        if self.layout == 'forced_coordination': 
-            teammate_state_prompt = ""
         return (self.layout_prompt + time_prompt + ego_state_prompt +
                 teammate_state_prompt + kitchen_state_prompt)
     
@@ -303,10 +298,10 @@ class ProAgentWithIntervention:
         REPLACED: Use AdvancedLLMInterpreter instead of GPT planner.
         Generates medium-level actions using CoT reasoning + memory.
         """
-        # Export state for interpreter
-        state_snapshot = self.export_state_for_llm(state)
+        # Use text-based state prompt (same as original ProAgent)
+        state_prompt = self.generate_state_prompt(state)
         
-        # Get recent history
+        # Get recent history with teammate actions
         recent_history = self._recent_history[-self.history_horizon:]
         
         # Get human intervention if available
@@ -314,14 +309,16 @@ class ProAgentWithIntervention:
         
         # Create human message
         hm = HumanMessage(t=getattr(state, "timestep", 0), text=human_text or "")
+        if hm.text.strip():
+            print(f"[HUMAN] Consuming intervention at t={hm.t}: '{hm.text}'")
         
         try:
             # Get plan from interpreter
-            plan = self.interpreter.propose_plan(state_snapshot, hm, recent_history)
+            plan = self.interpreter.propose_plan(state_prompt, hm, recent_history)
             # Store debug info
             try:
                 self.last_plan = {
-                    "steps": [getattr(s, 'macro', None) for s in plan.steps],
+                    "steps": plan.steps,  # Direct list of ML_action strings
                     "confidence": getattr(plan, 'confidence', None)
                 }
                 self.last_plan_category = getattr(plan, 'category', None)
@@ -329,13 +326,25 @@ class ProAgentWithIntervention:
                 print(f"[INTP] category={self.last_plan_category} conf={self.last_plan.get('confidence')} steps={self.last_plan.get('steps')} rationale={self.last_plan_rationale}")
             except Exception:
                 pass
+            # Record a memory event when a new plan is computed
+            try:
+                t = int(getattr(state, 'timestep', 0))
+                self.memory.write_events([
+                    {"t": t,
+                     "type": "plan",
+                     "steps": list(plan.steps),
+                     "conf": float(getattr(plan, 'confidence', 0.0)),
+                     "category": str(getattr(plan, 'category', '')),
+                     "rationale": str(getattr(plan, 'rationale_public', ''))}
+                ])
+            except Exception:
+                pass
             
             # Return first step as current ml_action
             if not plan.steps:
                 raise RuntimeError("Interpreter returned empty plan")
-            first_step = plan.steps[0]
             # Use ML action directly from the step
-            ml_action = first_step.macro
+            ml_action = plan.steps[0]
             print(f"🧠 Interpreter generated plan with {len(plan.steps)} steps")
             print(f"📋 Current ml_action: {ml_action}")
             return ml_action
@@ -344,72 +353,8 @@ class ProAgentWithIntervention:
             print(f"❌ Interpreter failed: {e}")
             raise
     
-    
     # TODO: when the interpreter fails, generate a failure message and feedback to the interpreter, replan
     
-    def export_state_for_llm(self, state) -> Dict[str, Any]:
-        """Export state in format suitable for LLM interpreter."""
-        try:
-            players = getattr(state, "players", [])
-            
-            def player_info(p, idx):
-                return {
-                    "id": idx,
-                    "pos": [int(p.position[0]), int(p.position[1])],
-                    "orientation": str(getattr(p, "orientation", "")),
-                    "holding": str(getattr(getattr(p, "held_object", None), "name", "nothing"))
-                }
-            
-            # Get pot information
-            pot_states_dict = self.mdp.get_pot_states(state)
-            pots = []
-            try:
-                for pot_id, pot_pos in enumerate(self.pot_id_to_pos):
-                    pot_state = "empty"
-                    for state_type, positions in pot_states_dict.items():
-                        if pot_pos in positions:
-                            pot_state = state_type
-                            break
-                    pots.append({
-                        "id": pot_id,
-                        "pos": list(pot_pos),
-                        "state": pot_state
-                    })
-            except Exception:
-                pass
-            
-            # Get counter objects
-            try:
-                counter_objects = self.mdp.get_counter_objects_dict(
-                    state, list(self.mdp.terrain_pos_dict["X"])
-                )
-                counters = []
-                for pos, obj_name in counter_objects.items():
-                    if obj_name != ' ':
-                        counters.append({
-                            "pos": list(pos),
-                            "object": obj_name
-                        })
-            except Exception:
-                counters = []
-            
-            return {
-                "layout": self.layout,
-                "timestep": int(getattr(state, "timestep", 0)),
-                "players": [player_info(players[i], i) for i in range(len(players))],
-                "pots": pots,
-                "counters": counters,
-                "layout_info": self.layout_prompt
-            }
-        except Exception as e:
-            print(f"⚠️ Error exporting state: {e}")
-            return {
-                "layout": self.layout,
-                "timestep": int(getattr(state, "timestep", 0)),
-                "players": [],
-                "pots": [],
-                "counters": []
-            }
     
     # ==================== VERIFICATOR (copied from ProAgent) ====================
     
@@ -788,18 +733,37 @@ class ProAgentWithIntervention:
             return chosen_action
     
     def _append_history_tick(self, state, action):
-        """Append action to recent history for interpreter."""
+        """Append action to recent history for interpreter, including teammate actions."""
         try:
             players = getattr(state, "players", [])
             ego_pos = [int(players[0].position[0]), int(players[0].position[1])] if players else None
             mate_pos = [int(players[1].position[0]), int(players[1].position[1])] if len(players) > 1 else None
             
+            # Get teammate's ML action if available
+            mate_ml_action = None
+            if hasattr(state, 'ml_actions') and len(state.ml_actions) > 1:
+                mate_ml_action = state.ml_actions[1 - self.agent_index]
+            
+            # Get teammate's low-level action if available
+            mate_low_level_action = None
+            if hasattr(state, 'actions') and len(state.actions) > 1:
+                mate_low_level_action = str(state.actions[1 - self.agent_index])
+            elif hasattr(state, 'player_actions') and len(state.player_actions) > 1:
+                mate_low_level_action = str(state.player_actions[1 - self.agent_index])
+            
+            # Try to infer teammate's action from state changes
+            mate_action_inferred = self._infer_teammate_action(state)
+            
             self._recent_history.append({
                 "t": int(getattr(state, "timestep", 0)),
                 "ego_action": str(action),
                 "ego_pos": ego_pos,
+                "ego_ml_action": getattr(self, "current_ml_action", None),
                 "mate_pos": mate_pos,
-                "ml_action": getattr(self, "current_ml_action", None)
+                "mate_ml_action": mate_ml_action,
+                "mate_low_level_action": mate_low_level_action,
+                "mate_action_inferred": mate_action_inferred,
+                "mate_holding": str(getattr(getattr(players[1], "held_object", None), "name", "nothing")) if len(players) > 1 else "unknown"
             })
             
             # Keep history bounded
@@ -808,6 +772,47 @@ class ProAgentWithIntervention:
                 
         except Exception as e:
             print(f"⚠️ Error appending history: {e}")
+    
+    def _infer_teammate_action(self, current_state):
+        """Infer teammate's likely action based on state changes."""
+        try:
+            if not hasattr(self, '_prev_mate_state') or self._prev_mate_state is None:
+                self._prev_mate_state = {
+                    'pos': None,
+                    'holding': None
+                }
+                return "unknown"
+            
+            players = getattr(current_state, "players", [])
+            if len(players) <= 1:
+                return "unknown"
+                
+            mate = players[1 - self.agent_index]
+            current_pos = [int(mate.position[0]), int(mate.position[1])]
+            current_holding = str(getattr(getattr(mate, "held_object", None), "name", "nothing"))
+            
+            prev_pos = self._prev_mate_state.get('pos')
+            prev_holding = self._prev_mate_state.get('holding')
+            
+            # Update previous state
+            self._prev_mate_state['pos'] = current_pos
+            self._prev_mate_state['holding'] = current_holding
+            
+            # Infer action based on changes
+            if prev_pos and current_pos != prev_pos:
+                return "moved"
+            elif prev_holding != current_holding:
+                if prev_holding == "nothing" and current_holding != "nothing":
+                    return f"picked_up_{current_holding}"
+                elif prev_holding != "nothing" and current_holding == "nothing":
+                    return f"put_down_{prev_holding}"
+                else:
+                    return "interacted"
+            else:
+                return "stayed"
+                
+        except Exception as e:
+            return "unknown"
     
     # ==================== PUBLIC API ====================
     
@@ -830,11 +835,31 @@ class ProAgentWithIntervention:
         self.agent_index = agent_index
     
     def apply_human_intervention(self, text: str):
-        """Apply human intervention text to the agent's inbox."""
+        """Apply human intervention text to the agent's inbox and immediately override current action."""
         if text and text.strip():
             self._human_inbox.append(text.strip())
             self._intervention_history.append(text.strip())
             print(f"🎯 Human intervention received: '{text.strip()}'")
+            # Record structured memory event of the human intervention
+            try:
+                t = int(getattr(self.mdp, 'timestep', getattr(self, 'current_timestep', 0)))
+            except Exception:
+                t = int(getattr(self, 'current_timestep', 0))
+            self.memory.write_events([
+                {"t": t,
+                 "type": "human_msg",
+                 "text": text.strip(),
+                 "agent_ml_action": self.current_ml_action,
+                 "state": {
+                     "ego_pos": [int(self.mdp.state.players[self.agent_index].position[0]), int(self.mdp.state.players[self.agent_index].position[1])] if hasattr(self.mdp, 'state') else None,
+                     "mate_pos": [int(self.mdp.state.players[1-self.agent_index].position[0]), int(self.mdp.state.players[1-self.agent_index].position[1])] if hasattr(self.mdp, 'state') else None
+                 }}
+            ])
+            
+            # Immediately override current ML action to process intervention
+            self.current_ml_action = None
+            self.current_ml_action_steps = 0
+            print(f"🔄 Overriding current ML action to process intervention")
 
     # Compatibility with demo harness API
     def process_human_intervention(self, text: str) -> bool:
@@ -849,10 +874,12 @@ class ProAgentWithIntervention:
     
     def get_intervention_stats(self) -> Dict[str, Any]:
         """Get statistics about interpreter usage and interventions."""
+        processed = len([h for h in self._intervention_history])
         return {
-            "total_interventions": len(self._human_inbox),
+            "total_interventions": processed,
             "history_length": len(self._recent_history),
-            "memory_entries": len(self.memory.facts) if hasattr(self.memory, 'facts') else 0,
+            # Count episodic entries to reflect recent memory updates visible in UI
+            "memory_entries": len(getattr(self.memory, 'episodic', [])),
             "current_ml_action": self.current_ml_action,
             "current_ml_action_steps": self.current_ml_action_steps
         }

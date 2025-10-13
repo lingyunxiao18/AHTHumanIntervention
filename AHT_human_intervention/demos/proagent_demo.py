@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import argparse
 import pygame
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -56,19 +57,30 @@ def convert_action(a):
 
 
 def main():
-    layout = 'counter_circuit'
-    layout_name = pro_utils.NEW_LAYOUTS[layout]
+    parser = argparse.ArgumentParser(description='ProAgentWithIntervention Demo')
+    parser.add_argument('--layout', type=str, default='counter_circuit', help='Layout key (mapped via NEW_LAYOUTS)')
+    parser.add_argument('--layout_name', type=str, default=None, help='Direct Overcooked layout name (overrides --layout)')
+    parser.add_argument('--horizon', type=int, default=500)
+    parser.add_argument('--random_start', action='store_true', help='Randomize player starting positions')
+    args = parser.parse_args()
+
+    layout = args.layout
+    if args.layout_name is not None:
+        layout_name = args.layout_name
+    else:
+        layout_name = pro_utils.NEW_LAYOUTS.get(layout, layout)
 
     mdp = OvercookedGridworld.from_layout_name(layout_name)
-    env = OvercookedEnv(mdp, horizon=500)
+    start_fn = mdp.get_random_start_state_fn(random_start_pos=True) if args.random_start else None
+    env = OvercookedEnv(mdp, start_state_fn=start_fn, horizon=args.horizon)
     env.reset()
 
 	# Agents: Player0 = ProAgentWithIntervention, Player1 = OnionSpecialistAgent
     # Create base ProAgent first to get MLAM, then wrap with intervention
-    base_agent = pro_utils.make_agent('ProAgent', mdp, layout, model='gpt-4.1-nano', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=True)
+    base_agent = pro_utils.make_agent('ProAgent', mdp, layout, model='gpt-4.1-mini', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=True)
     
     # Create ProAgentWithIntervention using the same MLAM
-    p0 = ProAgentWithIntervention(base_agent.mlam, layout, model='gpt-4.1-nano', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=True, intervention_model='gpt-4.1-nano')
+    p0 = ProAgentWithIntervention(base_agent.mlam, layout, model='gpt-4.1-mini', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=True)
     p1 = OnionSpecialistAgent(mdp, agent_idx=1, agent_name="OnionSpec")
     # Ensure agent indices are set for shared Agent API
     if hasattr(p0, 'set_agent_index'):
@@ -78,17 +90,78 @@ def main():
 
     # Pygame
     pygame.init()
-    screen = pygame.display.set_mode((1200, 800))
-    pygame.display.set_caption('ProAgentWithIntervention Demo (Player0) + OnionSpecialist (Player1)')
+    # Slightly narrower to better fit on screen
+    screen = pygame.display.set_mode((1400, 800))
+    pygame.display.set_caption(f'ProAgentWithIntervention Demo [{layout_name}] (Player0) + OnionSpecialist (Player1)')
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 24)
     viz = StateVisualizer()
+    
+    # Print helpful information about the new interpreter system
+    print("🤖 ProAgentWithIntervention Demo Started")
+    print("📋 New Interpreter Features:")
+    print("   - CoT reasoning with memory")
+    print("   - Plan categorization (policy/env/teammate/vague)")
+    print("   - Confidence scoring")
+    print("   - Structured rationale output")
+    print("   - Memory persistence across interventions")
+    print("")
+    print("🎮 Controls:")
+    print("   - SPACE: Pause/Resume")
+    print("   - P: Start intervention (type command)")
+    print("   - M: Print memory state (debug)")
+    print("   - ESC: Quit")
+    print("")
+    print("💡 Example interventions to try:")
+    print("   - 'Focus on cooking onions first'")
+    print("   - 'Help your teammate by delivering soup'")
+    print("   - 'Avoid blocking the center area'")
+    print("   - 'Pick up more onions from the left dispenser'")
+    print("")
 
     state = env.state
     step = 0
     paused = False
     intervention_mode = False
     intervention_text = ''
+
+    # Simple word-wrapping helper for the right-side info panel
+    def wrap_text(text, font_obj, max_width):
+        if not text:
+            return [""]
+        words = text.split()
+        lines = []
+        current = []
+        for w in words:
+            test_line = (" ".join(current + [w])).strip()
+            if font_obj.size(test_line)[0] <= max_width or not current:
+                current.append(w)
+            else:
+                lines.append(" ".join(current))
+                current = [w]
+        if current:
+            lines.append(" ".join(current))
+        return lines
+
+    # Wrap a labeled message into at most two lines, with ellipsis on overflow
+    def wrap_two_lines(label, content, font_obj, max_width):
+        full = f"{label}{content}" if label else content
+        wrapped = wrap_text(full, font_obj, max_width)
+        if len(wrapped) <= 2:
+            return wrapped
+        # merge any excess into the second line and append ellipsis
+        first = wrapped[0]
+        second = " ".join(wrapped[1:])
+        # If second still too wide, we will trim visually with ellipsis
+        if font_obj.size(second)[0] > max_width:
+            # binary trim to fit
+            s = second
+            while s and font_obj.size(s + "...")[0] > max_width:
+                s = s[:-1]
+            second = s + "..."
+        else:
+            second = second + "..."
+        return [first, second]
 
     while step < 200:
         for event in pygame.event.get():
@@ -102,13 +175,19 @@ def main():
                         if cmd:
                             # Use the advanced intervention system
                             try:
+                                print(f"🎯 Applying intervention: '{cmd}'")
                                 success = p0.process_human_intervention(cmd)
                                 if success:
                                     print(f"✅ Intervention processed: '{cmd}'")
+                                    # Show intervention stats after processing
+                                    stats = p0.get_intervention_stats()
+                                    print(f"📊 Agent stats after intervention: {stats}")
                                 else:
                                     print(f"❌ Intervention failed: '{cmd}'")
                             except Exception as e:
                                 print(f"❌ Intervention error: {e}")
+                                import traceback
+                                traceback.print_exc()
                         intervention_mode = False
                         intervention_text = ''
                         paused = False
@@ -127,6 +206,24 @@ def main():
                     elif event.key == pygame.K_ESCAPE:
                         pygame.quit()
                         return
+                    elif event.key == pygame.K_m:
+                        # Debug: print memory state
+                        try:
+                            print("\n🧠 Agent Memory State:")
+                            if hasattr(p0, 'memory'):
+                                memory = p0.memory
+                                print(f"   Semantic entries: {len(memory.semantic)}")
+                                print(f"   Episodic entries: {len(memory.episodic)}")
+                                if hasattr(memory, 'facts'):
+                                    print(f"   Facts: {len(memory.facts)}")
+                                print(f"   Memory view: {memory.prompt_view()[:200]}...")
+                                # Print detailed memory contents
+                                memory.debug_print_memory()
+                            else:
+                                print("   No memory object found")
+                            print("")
+                        except Exception as e:
+                            print(f"❌ Memory debug error: {e}")
 
         if not paused and not intervention_mode:
             # Query agents
@@ -148,14 +245,28 @@ def main():
             # Log per-step actions and current medium-level plan
             try:
                 ml = getattr(p0, 'current_ml_action', None)
-                planner_out = getattr(p0, 'last_planner_response', None)
+                # Get new interpreter plan info
+                last_plan = getattr(p0, 'last_plan', None)
+                last_plan_category = getattr(p0, 'last_plan_category', None)
+                last_plan_rationale = getattr(p0, 'last_plan_rationale', None)
+                last_plan_confidence = last_plan.get('confidence') if last_plan else None
+                
                 a0_conv = convert_action(a0)
                 a1_conv = convert_action(a1)
                 joint = (a0_conv, a1_conv)
-                print(f"[STEP {step}] LLM={planner_out}")
+                
+                # Enhanced logging with new interpreter output
+                print(f"[STEP {step}] Interpreter Category: {last_plan_category}, Confidence: {last_plan_confidence}")
+                print(f"[STEP {step}] Interpreter Rationale: {last_plan_rationale}")
+                if last_plan:
+                    print(f"[STEP {step}] Interpreter Plan Steps: {last_plan.get('steps', [])}")
                 print(f"[STEP {step}] P0_action_raw={a0}, P0_action_conv={a0_conv}, P0_ml_action={ml}")
-            except Exception:
-                pass
+                
+                # Get intervention stats
+                stats = p0.get_intervention_stats()
+                print(f"[STEP {step}] Agent Stats: {stats}")
+            except Exception as e:
+                print(f"[STEP {step}] Error in logging: {e}")
 
             # Step env
             joint = (a0_conv, a1_conv)
@@ -167,17 +278,120 @@ def main():
         img = viz.render_state(state, mdp.terrain_mtx)
         screen.blit(img, (10, 10))
 
-        # UI
+        # UI - Enhanced with interpreter information
         info_lines = [
             f'Step: {step}',
-            'Controls: SPACE pause, p intervene (type command), ESC quit',
-            f'Interventions: {len(p0.get_intervention_history())}',
+            'Controls: SPACE=pause, P=intervene, M=memory debug, ESC=quit',
+            f'Total Interventions: {len(p0.get_intervention_history())}',
         ]
+
+        # Teammate model/type
+        teammate_name = getattr(p1, 'agent_name', type(p1).__name__)
+        info_lines.append(f'Teammate: {teammate_name}')
+        
+        # Add interpreter status information
+        try:
+            last_plan = getattr(p0, 'last_plan', None)
+            last_plan_category = getattr(p0, 'last_plan_category', None)
+            last_plan_rationale = getattr(p0, 'last_plan_rationale', None)
+            last_plan_confidence = last_plan.get('confidence') if last_plan else None
+            
+            if last_plan_category:
+                info_lines.append(f'Interpreter Category: {last_plan_category}')
+            if last_plan_confidence is not None:
+                info_lines.append(f'Confidence: {last_plan_confidence:.2f}')
+            if last_plan and last_plan.get('steps'):
+                steps_str = ', '.join(last_plan.get('steps', [])[:3])  # Show first 3 steps
+                if len(last_plan.get('steps', [])) > 3:
+                    steps_str += '...'
+                info_lines.append(f'Plan Steps: {steps_str}')
+            if last_plan_rationale:
+                # Defer wrapping until we know panel width
+                info_lines.append(('RATIONAL', last_plan_rationale))
+                
+            # Show current ML action
+            current_ml = getattr(p0, 'current_ml_action', None)
+            if current_ml:
+                info_lines.append(f'Current ML Action: {current_ml}')
+                
+            # Show agent stats
+            stats = p0.get_intervention_stats()
+            info_lines.append(f'Memory Entries: {stats.get("memory_entries", 0)}')
+            info_lines.append(f'History Length: {stats.get("history_length", 0)}')
+            # Show last few episodic memory events
+            try:
+                mem_events = list(getattr(p0.memory, 'episodic', []))[-4:]
+                for ev in mem_events:
+                    if ev.get('type') == 'human_msg':
+                        info_lines.append(('MEM', f"t{ev.get('t')}: human[{(ev.get('text') or '')[:60]}]"))
+                    elif ev.get('type') == 'plan':
+                        steps = ev.get('steps', [])
+                        info_lines.append(('MEM', f"t{ev.get('t')}: plan[{', '.join(steps[:3])}{'...' if len(steps)>3 else ''}] conf={ev.get('conf'):.2f}"))
+                    else:
+                        info_lines.append(('MEM', f"t{ev.get('t')}: {ev.get('type')}"))
+            except Exception:
+                pass
+            
+            # Show teammate model from memory module (LLM-authored)
+            try:
+                mem_view = p0.memory.prompt_view() if hasattr(p0, 'memory') else {}
+                tm_view = mem_view.get('teammate_model', {}) if isinstance(mem_view, dict) else {}
+                tm_desc = tm_view.get('behavior_description')
+                tm_role = tm_view.get('role')
+                tm_conf = tm_view.get('role_confidence')
+                if tm_desc:
+                    # Defer wrapping; insert a tuple marker for later re-wrap with panel width
+                    info_lines.append(('TMODEL', tm_desc))
+                if tm_role is not None:
+                    if tm_conf is not None:
+                        info_lines.append(f'Teammate Role: {tm_role} (conf {float(tm_conf):.2f})')
+                    else:
+                        info_lines.append(f'Teammate Role: {tm_role}')
+            except Exception:
+                pass
+            
+        except Exception as e:
+            info_lines.append(f'Debug Error: {str(e)[:30]}...')
+        
         if intervention_mode:
-            info_lines += [f'Intervention: {intervention_text}_']
-        for i, line in enumerate(info_lines):
+            info_lines.append(f'Intervention: {intervention_text}_')
+        else:
+            # Show recent intervention history
+            intervention_history = p0.get_intervention_history()
+            if intervention_history:
+                recent_interventions = intervention_history[-2:]  # Show last 2 interventions
+                for i, interv in enumerate(recent_interventions):
+                    label = 'Last intervention' if i == 0 else 'Prev intervention'
+                    info_lines.append(f'{label}: {interv}')
+            
+        # Render UI in a wider right-side panel with word wrapping
+        text_panel_x = img.get_width() + 30
+        text_panel_y = 10
+        text_panel_width = max(500, screen.get_width() - text_panel_x - 20)
+
+        # Rebuild lines with controlled wrapping for long labeled texts (two lines max)
+        wrapped_lines = []
+        for line in info_lines:
+            if isinstance(line, tuple) and len(line) == 2:
+                tag, content = line
+                if tag == 'TMODEL':
+                    wrapped_lines.extend(wrap_two_lines('Teammate Model: ', content, font, text_panel_width))
+                    continue
+                if tag == 'RATIONAL':
+                    wrapped_lines.extend(wrap_two_lines('Rationale: ', content, font, text_panel_width))
+                    continue
+                if tag == 'MEM':
+                    wrapped_lines.extend(wrap_two_lines('Mem: ', content, font, text_panel_width))
+                    continue
+            wrapped_lines.extend(wrap_text(line if isinstance(line, str) else str(line), font, text_panel_width))
+
+        max_lines = 28
+        start_line = max(0, len(wrapped_lines) - max_lines)
+        visible_lines = wrapped_lines[start_line:]
+
+        for i, line in enumerate(visible_lines):
             txt = font.render(line, True, (0, 0, 0))
-            screen.blit(txt, (10, 420 + i * 22))
+            screen.blit(txt, (text_panel_x, text_panel_y + i * 22))
 
         pygame.display.flip()
         clock.tick(5)
@@ -187,4 +401,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

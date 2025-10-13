@@ -2,19 +2,10 @@
 import os
 import json
 import time
+import re
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List, Dict, Any, Literal, Tuple
-
-OPENAI_API_KEY="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"
-
-# Minimal dependency: use OpenAI if available; otherwise operate in rule-based fallback
-try:
-	from openai import OpenAI  # SDK >=1.0 (Responses API)
-	_HAS_OPENAI = True
-except Exception:
-	OpenAI = None  # type: ignore
-	_HAS_OPENAI = False
-
+from openai import OpenAI  
 
 PROAGENT_ALLOWED_ML_ACTIONS = {
 	"pickup_onion",
@@ -22,9 +13,16 @@ PROAGENT_ALLOWED_ML_ACTIONS = {
 	"put_onion_in_pot",
 	"fill_dish_with_soup",
 	"deliver_soup",
-	"place_obj_on_counter",
-	"wait"
+	"place_obj_on_counter"
 }
+
+# All valid wait actions
+WAIT_ACTIONS = [f"wait({i})" for i in range(1, 21)]
+
+# Combined allowed actions for schema validation
+ALL_VALID_ML_ACTIONS = list(PROAGENT_ALLOWED_ML_ACTIONS) + WAIT_ACTIONS
+
+Category = Literal["policy", "env", "teammate", "vague"]
 
 # ---------------------------------------------------------------------
 # CoT + Memory Interpreter for Human Interventions in Overcooked-AI
@@ -32,25 +30,9 @@ PROAGENT_ALLOWED_ML_ACTIONS = {
 # Outputs: structured Plan JSON, one-sentence rationale, message category
 # ---------------------------------------------------------------------
 
-Category = Literal["policy", "env", "teammate", "vague"]
-
-@dataclass
-class MacroStep:
-	"""
-	A single medium-level action step.
-	- macro: ML action string (e.g., pickup_onion, put_onion_in_pot, deliver_soup, wait(3))
-	- args: free-form dict; keep keys simple (e.g., 'pot_id', 'duration')
-	- guard: OPTIONAL string guard (simple boolean in your runtime; feel free to ignore if not used)
-	- timeout: OPTIONAL max primitive steps allowed before we bail/replan
-	"""
-	macro: str
-	args: Optional[Dict[str, Any]] = None
-	guard: Optional[str] = None
-	timeout: Optional[int] = None
-
 @dataclass
 class Plan:
-	steps: List[MacroStep]
+	steps: List[str]  # List of ML_action strings instead of MacroStep objects
 	confidence: float
 	rationale_public: str                 # <= 1 sentence, no CoT
 	category: Category                    # model's classification of the human msg
@@ -58,7 +40,7 @@ class Plan:
 
 	def to_dict(self) -> Dict[str, Any]:
 		return {
-			"steps": [asdict(s) for s in self.steps],
+			"steps": self.steps,  # Direct list of ML_action strings
 			"confidence": self.confidence,
 			"rationale_public": self.rationale_public,
 			"category": self.category,
@@ -67,27 +49,96 @@ class Plan:
 
 class AgentMemory:
 	"""
-	Lightweight persistent memory (kept in RAM by default).
-	- semantic: long-lived facts & rules
+	Overcooked-specific persistent memory with structured world state tracking.
+	- semantic: long-lived facts, rules, and dynamic world state
 	- episodic: recent events for summarization
 	"""
-	def __init__(self, episodic_cap: int = 120):
+	def __init__(self, episodic_cap: int = 120, mdp=None):
 		self.semantic: Dict[str, Any] = {
-			"layout_facts": {},
+			# Static layout & traffic
+			"layout_facts": {
+				"pots": [],               # [{"pos": [x,y]}, ...]
+				"counters": [],           # [{"pos": [x,y]}]
+				"onion_sources": [],      # [{"pos": [x,y]}]
+				"dish_sources": [],       # [{"pos": [x,y]}]
+				"serving_windows": [],    # [{"pos": [x,y]}]
+				"blocked_cells": [],      # [(x,y), ...] (updated by env messages)
+			},
+			# Dynamic, frequently updated world state (LLM/env messages can correct this)
+			"world_state": {
+				"pot_status": [],         # [{"pos":[x,y],"contents":n_onions,"ready":bool,"burning":bool}]
+				"onion_caches": [],       # [{"pos":[x,y],"count":k,"t":ts}]
+				"dish_availability": 0,   # rough count if tracked
+			},
+			# Teammate hypothesis & coordination contract
 			"teammate_model": {
 				"current_role": "unknown",
 				"role_confidence": 0.0,
 				"since_t": None,
-				"behavior_notes": "",
+				"behavior_description": "",
+				"last_updated": None,
+				# Optional: reliability score influences how much we defer
+				"reliability": 0.5
 			},
-			"human_prefs": {},
-			"playbook": [],
+			# Human/operator preferences or "house rules"
+			"human_prefs": {
+				# e.g., "prefer_left_pot": True, "avoid_crossing_center": True
+			},
+			# Compact "if…then…" contracts derived from interventions or LLM
+			"playbook": [
+				# {"if": "mate_role==server and pot_ready", "then": ["pickup_onion", "..."], "note":"..."}
+			],
+			# Safety and throttles
 			"afford_safety": {"max_wait_on_pass": 2},
+			# Choke points or priority zones useful for pathing/avoidance
 			"hotspots": [],
+			# Things to clarify when vague messages show up
 			"open_questions": [],
 		}
 		self.episodic: List[Dict[str, Any]] = []
 		self._cap = episodic_cap
+		
+		# Initialize layout facts if MDP is provided
+		if mdp is not None:
+			self.initialize_layout_facts(mdp)
+
+	def initialize_layout_facts(self, mdp) -> None:
+		"""
+		Initialize layout_facts from the MDP using the same logic as generate_layout_prompt.
+		This populates the memory with structured layout information.
+		"""
+		layout_facts = self.semantic["layout_facts"]
+		
+		# Map MDP method names to our layout_facts keys
+		layout_mapping = {
+			"onion_dispenser": "onion_sources",
+			"dish_dispenser": "dish_sources", 
+			"serving": "serving_windows",
+			"pot": "pots",
+		}
+		
+		# Extract layout information from MDP
+		for obj_type, facts_key in layout_mapping.items():
+			try:
+				locations = getattr(mdp, f"get_{obj_type}_locations")()
+				layout_facts[facts_key] = [{"pos": list(pos), "id": idx} for idx, pos in enumerate(locations)]
+			except AttributeError:
+				# Some layouts might not have all object types
+				layout_facts[facts_key] = []
+		
+		# Initialize counters (typically all non-blocked positions)
+		try:
+			# Get the terrain map to identify counter positions
+			terrain = mdp.terrain_mtx
+			counters = []
+			for y in range(terrain.shape[0]):
+				for x in range(terrain.shape[1]):
+					# Counter positions are typically ' ' (space) in the terrain
+					if terrain[y, x] == ' ':
+						counters.append({"pos": [x, y]})
+			layout_facts["counters"] = counters
+		except AttributeError:
+			layout_facts["counters"] = []
 
 	def write_events(self, events: List[Dict[str, Any]]) -> None:
 		self.episodic.extend(events)
@@ -114,16 +165,35 @@ class AgentMemory:
 			return "No recent notable events."
 		return "Recent: " + "; ".join(notes[:8])
 
+	def debug_print_memory(self) -> None:
+		"""Print detailed memory contents for debugging."""
+		print("=" * 50)
+		print("MEMORY DEBUG - FULL CONTENTS")
+		print("=" * 50)
+		
+		print(f"\nEPISODIC MEMORY ({len(self.episodic)} entries):")
+		for i, entry in enumerate(self.episodic[-10:]):  # Last 10 entries
+			print(f"  {i}: {entry}")
+		
+		print(f"\nSEMANTIC MEMORY:")
+		for key, value in self.semantic.items():
+			print(f"  {key}: {value}")
+		
+		print("=" * 50)
+
 	def upsert_semantic(self, patch: Dict[str, Any]) -> None:
 		"""
 		Conservative merge of small dict patches from the model (after gating).
 		Only whitelisted top-level keys are merged.
 		"""
-		WHITELIST = {"layout_facts", "teammate_model", "human_prefs",
+		WHITELIST = {"layout_facts", "world_state", "teammate_model", "human_prefs",
 					 "playbook", "afford_safety", "hotspots", "open_questions"}
+		print(f"[MEMORY] upsert_semantic called with keys: {list(patch.keys())}")
 		for k, v in patch.items():
 			if k not in WHITELIST:
+				print(f"[MEMORY] Skipping non-whitelisted key: {k}")
 				continue
+			print(f"[MEMORY] Applying patch for key: {k}")
 			if isinstance(v, list):
 				base = self.semantic.get(k, [])
 				base.extend(v)
@@ -139,23 +209,62 @@ class AgentMemory:
 					base = dedup[-16:]
 				self.semantic[k] = base
 			elif isinstance(v, dict) and isinstance(self.semantic.get(k, {}), dict):
-				self.semantic[k].update(v)
+				# Special handling for teammate_model to preserve behavior_description
+				if k == "teammate_model" and "behavior_description" in v:
+					# Update behavior description with timestamp
+					v["last_updated"] = time.time()
+				# Deep merge for nested dicts like layout_facts and world_state
+				self._deep_merge(self.semantic[k], v)
 			else:
 				self.semantic[k] = v
+
+	def _deep_merge(self, base_dict: Dict[str, Any], update_dict: Dict[str, Any]) -> None:
+		"""Deep merge update_dict into base_dict."""
+		for key, value in update_dict.items():
+			if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
+				self._deep_merge(base_dict[key], value)
+			else:
+				base_dict[key] = value
 
 	def prompt_view(self) -> Dict[str, Any]:
 		"""Compact view for the model prompt."""
 		sem = self.semantic
+		tm = sem["teammate_model"]
+		ws = sem.get("world_state", {})
+		
+		# Debug: Print memory contents
+		print(f"[MEMORY-DEBUG] Episodic memory: {len(self.episodic)} entries")
+		if self.episodic:
+			print(f"[MEMORY-DEBUG] Last 3 episodic entries: {self.episodic[-3:]}")
+		print(f"[MEMORY-DEBUG] Semantic memory keys: {list(sem.keys())}")
+		print(f"[MEMORY-DEBUG] Teammate model: {tm}")
+		print(f"[MEMORY-DEBUG] World state: {ws}")
+
+		# Keep short: last 1-2 key pot statuses, last 1-2 onion caches
+		key_pots = ws.get("pot_status", [])[-2:]
+		onion_caches = ws.get("onion_caches", [])[-2:]
+
 		return {
-			"layout_facts": sem.get("layout_facts", {}),
+			"layout_facts": {
+				"pots": sem["layout_facts"].get("pots", []),
+				"serving_windows": sem["layout_facts"].get("serving_windows", []),
+			},
+			"world_state": {
+				"pot_status": key_pots,
+				"onion_caches": onion_caches,
+				"dish_availability": ws.get("dish_availability", 0),
+			},
 			"teammate_model": {
-				k: sem["teammate_model"].get(k)
-				for k in ("current_role", "role_confidence", "since_t", "behavior_notes")
+				"role": tm.get("current_role"),
+				"role_confidence": tm.get("role_confidence"),
+				"behavior_description": tm.get("behavior_description"),
+				"reliability": tm.get("reliability"),
+				"last_updated": tm.get("last_updated"),
 			},
 			"human_prefs": sem.get("human_prefs", {}),
-			"playbook": sem.get("playbook", [])[-6:],
+			"playbook": sem.get("playbook", [])[-4:],  # small slice
 			"afford_safety": sem.get("afford_safety", {}),
-			"hotspots": sem.get("hotspots", [])[-3:],
+			"hotspots": sem.get("hotspots", [])[-2:],
 			"summary": self.summarize_recent(),
 		}
 
@@ -163,140 +272,135 @@ class AgentMemory:
 class HumanMessage:
 	t: int
 	text: str
-	category_hint: Optional[Category] = None
 
-def classify_message_heuristic(text: str) -> Category:
-	"""
-	Optional lightweight pre-classification;
-	the model will still output its own category.
-	"""
-	low = text.lower()
-	if any(k in low for k in ["do ", "don't ", "wait", "go ", "get ", "serve", "deliver", "take", "put "]):
-		return "policy"
-	if any(k in low for k in ["ready", "cooked", "timer", "on the right", "left pot", "there is", "available"]):
-		return "env"
-	if any(k in low for k in ["teammate", "they are", "she is", "he is", "your partner"]):
-		return "teammate"
-	return "vague"
+def _extract_first_json_object(text: str) -> Tuple[dict | None, str | None]:
+    """
+    Fallback extractor in case model returns extra text.
+    """
+    import re
+    if not text:
+        return None, "Empty text."
+    try:
+        return json.loads(text), None
+    except Exception:
+        pass
+    # Try fenced JSON
+    m = re.search(r"```(?:json)?\s*({.*?})\s*```", text, flags=re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1)), None
+        except Exception as e:
+            return None, f"JSON decode error: {e}"
+    # Fallback: find first {...} block
+    start, depth = None, 0
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                block = text[start:i+1]
+                try:
+                    return json.loads(block), None
+                except Exception as e:
+                    return None, f"JSON decode error: {e}"
+    return None, "No JSON object found."
+
 
 class LLMClient:
-	"""
-	Adapter around your OpenAI Responses API (or similar).
-	You must implement `respond_json(schema, system, user)` to:
-	- run a short, hidden CoT,
-	- enforce JSON-only output matching `schema`,
-	- return parsed Python dict.
-	"""
-	def __init__(self, openai_client):
-		self.client = openai_client
+    """
+    Adapter around the OpenAI API using gpt-4.1-mini with enforced JSON mode.
+    Falls back to heuristic extraction if response_format fails.
+    """
 
-	def respond_json(self, schema: Dict[str, Any], system: str, user: Dict[str, Any]) -> Dict[str, Any]:
-		"""
-		Return JSON using available OpenAI API path.
-		Tries Responses API first; falls back to Chat Completions with json_object.
-		"""
-		# Try Responses API
-		try:
-			print("[LLMClient] Using Responses API with json_schema")
-			r = self.client.responses.create(
-				model="gpt-4.1-nano",
-				input=[
-					{"role": "system", "content": system},
-					{"role": "user", "content": json.dumps(user)}
-				],
-				response_format={
-					"type": "json_schema",
-					"json_schema": {"name": "Plan", "schema": schema}
-				},
-			)
-			content = r.output[0].content[0].text
-			return json.loads(content)
-		except Exception as e:
-			print(f"[LLMClient] Responses API failed: {e}")
+    def __init__(self, openai_client: Optional[OpenAI] = None, model: str = "gpt-4.1-mini"):
+        self.client = openai_client or OpenAI()
+        self.model = model
 
-		# Fallback to Chat Completions JSON
-		try:
-			print("[LLMClient] Using Chat Completions with json_object")
-			res = self.client.chat.completions.create(
-				model="gpt-4o-mini",
-				messages=[
-					{"role": "system", "content": system},
-					{"role": "user", "content": json.dumps(user)}
-				],
-				temperature=0.1,
-				max_tokens=500,
-				response_format={"type": "json_object"},
-			)
-			text = res.choices[0].message.content.strip()
-			print(f"[LLMClient] Chat JSON text head: {text[:120]}")
-			return json.loads(text)
-		except Exception as e:
-			print(f"[LLMClient] Chat Completions failed: {e}")
+    def respond_json(self, schema: Dict[str, Any], system: str, user: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Request structured JSON output from GPT-4.1-mini.
+        Returns parsed dict or raises ValueError with raw LLM text on failure.
+        """
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=512,
+            )
 
-		# Last resort: plain chat, try to extract JSON
-		print("[LLMClient] Using Chat Completions plain + JSON extraction")
-		res = self.client.chat.completions.create(
-			model="gpt-4o-mini",
-			messages=[
-				{"role": "system", "content": system + "\nReturn ONLY JSON."},
-				{"role": "user", "content": json.dumps(user)}
-			],
-			temperature=0.1,
-			max_tokens=500,
-		)
-		text = res.choices[0].message.content.strip()
-		if "```json" in text:
-			start = text.find("```json") + 7
-			end = text.find("```", start)
-			text = text[start:end].strip()
-		elif "{" in text and "}" in text:
-			start = text.find("{")
-			end = text.rfind("}") + 1
-			text = text[start:end]
-		print(f"[LLMClient] Extracted JSON head: {text[:120]}")
-		return json.loads(text)
+            # Standard chat completions API
+            try:
+                text_out = response.choices[0].message.content
+            except Exception:
+                # Fallback for SDK variation
+                text_out = getattr(response, "choices", [{}])[0].get("message", {}).get("content", None) or str(response)
+
+            if not text_out:
+                raise ValueError(f"No text content in response: {response}")
+
+            # Attempt to parse cleanly
+            try:
+                return json.loads(text_out)
+            except json.JSONDecodeError:
+                # Extract first JSON block if model returned explanation text
+                obj, err = _extract_first_json_object(text_out)
+                if obj is None:
+                    raise ValueError(f"Could not parse JSON: {err}\nRaw: {text_out}")
+                return obj
+
+        except Exception as e:
+            raise RuntimeError(f"LLMClient.respond_json failed: {e}")
 
 PLAN_JSON_SCHEMA: Dict[str, Any] = {
-	"$schema": "http://json-schema.org/draft-07/schema#",
-	"type": "object",
-	"required": ["steps", "confidence", "rationale_public", "category"],
-	"properties": {
-		"steps": {
-			"type": "array",
-			"minItems": 1,
-			"items": {
-				"type": "object",
-				"required": ["macro"],
-				"properties": {
-					"macro": {"type": "string"},
-					"args": {"type": "object"},
-					"guard": {"type": "string"},
-					"timeout": {"type": "integer", "minimum": 0}
-				}
-			}
-		},
-		"confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-		"rationale_public": {"type": "string", "maxLength": 180},
-		"category": {"type": "string", "enum": ["policy", "env", "teammate", "vague"]},
-		"memory_writes": {"type": "array", "items": {"type": "object"}}
-	}
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["steps", "confidence", "rationale_public", "category", "teammate_behavior"],
+    "properties": {
+        "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "string",
+                "enum": ALL_VALID_ML_ACTIONS
+            }
+        },
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "rationale_public": {"type": "string", "maxLength": 180},
+        "category": {"type": "string", "enum": ["policy", "env", "teammate", "vague"]},
+        "teammate_behavior": {"type": "string", "maxLength": 220},
+        "memory_writes": {
+            "type": "array",
+            "items": {"type": "object"},
+            "default": []
+        }
+    }
 }
 
-SYSTEM_RULES = (
-	"You control Player0 in Overcooked-AI. Goal: deliver soups quickly and safely.\n"
-	"INPUTS you receive: (a) state_snapshot, (b) recent_history (few lines), (c) memory_view, (d) human_message.\n"
-	"Do a SHORT, PRIVATE chain-of-thought (<= 6 lines) to parse the human intent and choose a plan.\n"
-	"OUTPUT ONLY one JSON object matching the provided schema.\n"
-	"Constraints:\n"
-	" - 1–3 ML action steps max.\n"
-	" - Use ONLY these ML actions: pickup_onion, pickup_dish, put_onion_in_pot, fill_dish_with_soup, deliver_soup, place_obj_on_counter, wait(N)\n"
-	" - Add timeouts when appropriate (e.g., 6–20 primitive steps).\n"
-	" - Keep rationale_public to ONE sentence (no hidden reasoning).\n"
-	" - Classify the human message into one category: policy | env | teammate | vague.\n"
-	" - Prefer conservative, feasible actions if uncertain (e.g., wait(1)).\n"
-	" - Respect simple safety heuristics from memory_view.afford_safety.\n"
-	"Do not include your thoughts; return JSON only."
-)
+def _load_system_rules() -> str:
+	"""Load system rules from external file."""
+	script_dir = os.path.dirname(os.path.abspath(__file__))
+	rules_file = os.path.join(script_dir, "advanced_llm_system_rules.txt")
+	try:
+		with open(rules_file, 'r', encoding='utf-8') as f:
+			return f.read()
+	except FileNotFoundError:
+		print(f"[WARNING] System rules file not found at {rules_file}, using fallback")
+		return (
+			"You control Player0 in Overcooked-AI. Goal: deliver soups quickly and safely.\n"
+			"Use ONLY these ML actions: " + ", ".join(ALL_VALID_ML_ACTIONS) + "\n"
+			"Return JSON with steps, confidence, rationale_public, category, and memory_writes."
+		)
+
+SYSTEM_RULES = _load_system_rules()
 
 class AdvancedLLMInterpreter:
 	"""
@@ -312,63 +416,117 @@ class AdvancedLLMInterpreter:
 
 	def propose_plan(
 		self,
-		state_snapshot: Dict[str, Any],
+		state_prompt: str,
 		human_msg: HumanMessage,
 		recent_history: List[Dict[str, Any]],
 	) -> Plan:
-		if human_msg.category_hint is None:
-			human_msg.category_hint = classify_message_heuristic(human_msg.text)
-
 		user_payload = {
-			"state_snapshot": self._compact_state(state_snapshot),
+			"state_prompt": state_prompt,
 			"recent_history": recent_history[-self.history_horizon:],
 			"memory_view": self.memory.prompt_view(),
 			"human_message": {
 				"t": human_msg.t,
 				"text": human_msg.text,
-				"category_hint": human_msg.category_hint,
 			}
 		}
 
 		raw = self.llm.respond_json(PLAN_JSON_SCHEMA, SYSTEM_RULES, user_payload)
+		
+		# Debug: Check if LLM returned memory_writes
+		if raw.get("memory_writes"):
+			print(f"[MEMORY] LLM returned {len(raw['memory_writes'])} memory writes: {raw['memory_writes']}")
+		else:
+			print(f"[MEMORY] LLM returned no memory_writes")
 
-		steps = [MacroStep(**s) for s in raw.get("steps", [])]
+		# Validate ML actions are in allowed set
+		steps = raw.get("steps", [])
+		validated_steps = []
+		for step in steps:
+			if step in ALL_VALID_ML_ACTIONS:
+				validated_steps.append(step)
+			else:
+				print(f"[WARNING] Invalid ML action '{step}', skipping")
+		
+		# Determine category: empty string if no human intervention, otherwise use LLM response or default
+		category = ""
+		if human_msg.text.strip():  # If there's actual human intervention text
+			category = raw.get("category", "vague")
+		
 		plan = Plan(
-			steps=steps,
+			steps=validated_steps,
 			confidence=float(raw.get("confidence", 0.5)),
 			rationale_public=str(raw.get("rationale_public", ""))[:180],
-			category=raw.get("category", "vague"),
+			category=category,
 			memory_writes=raw.get("memory_writes", []),
 		)
 
-		safe_patch = self._gate_memory_writes(plan.memory_writes)
+		# Plan hygiene checks
+		# Hard cap actions to <= 3 and ensure at least one safe step
+		if len(plan.steps) > 3:
+			plan.steps = plan.steps[:3]
+		if not plan.steps:
+			plan.steps = ["wait(1)"]
+
+		# Clamp confidence to [0,1]
+		plan.confidence = max(0.0, min(1.0, plan.confidence))
+
+		# NEW: ingest LLM-authored teammate behavior (if present)
+		tb = (raw.get("teammate_behavior") or "").strip()
+		if tb:
+			plan.memory_writes.append({
+				"teammate_model": {
+					"behavior_description": tb,
+					"last_updated": time.time()
+				}
+			})
+		
+		safe_patch = self._gate_memory_writes(plan.memory_writes, plan.category)
+		if plan.memory_writes:
+			print(f"[MEMORY] LLM generated {len(plan.memory_writes)} memory writes")
 		if safe_patch:
+			print(f"[MEMORY] Applying safe patch: {list(safe_patch.keys())}")
 			self.memory.upsert_semantic(safe_patch)
+		else:
+			print(f"[MEMORY] No safe patch generated from {len(plan.memory_writes)} writes")
 		self.memory.write_events([
 			{"t": human_msg.t, "type": "human_msg", "kind": plan.category, "text": human_msg.text},
-			{"t": human_msg.t, "type": "plan", "steps": [s.macro for s in plan.steps], "conf": plan.confidence}
+			{"t": human_msg.t, "type": "plan", "steps": plan.steps, "conf": plan.confidence}
 		])
 
 		return plan
 
-	def _gate_memory_writes(self, writes: List[Dict[str, Any]]) -> Dict[str, Any]:
+	def _gate_memory_writes(self, writes: List[Dict[str, Any]], category: str = "vague") -> Dict[str, Any]:
 		"""
 		Convert a list of 'memory_writes' entries into a single semantic patch.
 		Keep it conservative: allow updates only in whitelisted regions and small payloads.
+		Category-based gating for different intervention types.
 		Expected patterns (examples):
 		  {"teammate_model": {"current_role":"plate_runner","role_confidence":0.7,"since_t":123}}
 		  {"human_prefs": {"prefer_left_pot": true}}
+		  {"world_state": {"pot_status": [{"pos":[1,2],"ready":true}]}}
 		  {"playbook": [{"if":"...","then":[...],"note":"..."}]}
 		"""
 		patch: Dict[str, Any] = {}
 		if not writes:
+			print(f"[MEMORY] No writes to gate")
 			return patch
-		for w in writes:
+		print(f"[MEMORY] Gating {len(writes)} writes with category: {category}")
+			
+		# Category-based whitelist - env messages can update world_state more freely
+		ALLOWED_KEYS = {"teammate_model", "human_prefs", "playbook", "afford_safety", "hotspots", "open_questions", "layout_facts"}
+		if category == "env":
+			ALLOWED_KEYS.add("world_state")
+		
+		for i, w in enumerate(writes):
+			print(f"[MEMORY] Processing write {i}: {list(w.keys())}")
 			for k, v in w.items():
-				if k not in {"teammate_model", "human_prefs", "playbook", "afford_safety", "hotspots", "open_questions"}:
+				if k not in ALLOWED_KEYS:
+					print(f"[MEMORY] Rejecting key '{k}' (not in ALLOWED_KEYS)")
 					continue
 				if isinstance(v, (dict, list)) and len(json.dumps(v)) > 2000:
+					print(f"[MEMORY] Rejecting key '{k}' (payload too large)")
 					continue
+				print(f"[MEMORY] Accepting key '{k}'")
 				if k not in patch:
 					patch[k] = v
 				else:
@@ -379,21 +537,5 @@ class AdvancedLLMInterpreter:
 						base = patch[k] if isinstance(patch[k], dict) else {}
 						base.update(v)
 						patch[k] = base
+		print(f"[MEMORY] Final patch keys: {list(patch.keys())}")
 		return patch
-
-	def _compact_state(self, state_snapshot: Dict[str, Any]) -> Dict[str, Any]:
-		"""
-		Trim the observable state to essentials to keep tokens small.
-		Expect keys like:
-		 - players -> [{"pos":[x,y],"orient":"N|S|E|W","holding":"onion|dish|soup|nothing"}, ...]
-		 - pots -> [{"id":1,"need":1,"cooking":false,"ready_in":null}, ...]
-		 - counters -> possibly large; keep only non-empty locations
-		 - layout_name, timestep, etc.
-		"""
-		s = dict(state_snapshot)
-		counters = s.get("counters", {})
-		if isinstance(counters, dict) and "objects" in counters:
-			objs = counters["objects"]
-			if isinstance(objs, list) and len(objs) > 12:
-				s["counters"]["objects"] = objs[:12]
-		return s
