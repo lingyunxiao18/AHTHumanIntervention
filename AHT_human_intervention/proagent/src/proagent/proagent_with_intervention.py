@@ -69,6 +69,17 @@ NAME_TO_ACTION = {
     "STAY": Action.STAY
 }
 
+# Mapping for low-level override strings to action constants
+LOW_LEVEL_OVERRIDE_TO_ACTION = {
+    "move_north": Direction.NORTH,
+    "move_south": Direction.SOUTH,
+    "move_east": Direction.EAST,
+    "move_west": Direction.WEST,
+    "wait": Action.STAY,  # Wait is implemented as STAY
+    "interact": Action.INTERACT,
+    "stay": Action.STAY,
+}
+
 
 class ProAgentWithIntervention:
     """
@@ -112,6 +123,10 @@ class ProAgentWithIntervention:
         self.teammate_ml_actions_dict = {}
         self.teammate_intentions_dict = {}
         
+        # Low-level override tracking
+        self.low_level_override = None
+        self.low_level_override_duration = 0
+        
         # Layout prompt generation (copied from ProAgent)
         self.layout_prompt = self.generate_layout_prompt()
         
@@ -139,6 +154,8 @@ class ProAgentWithIntervention:
         self.last_plan: Optional[Dict[str, Any]] = None
         self.last_plan_category: Optional[str] = None
         self.last_plan_rationale: Optional[str] = None
+        self.last_intervention_reason: Optional[str] = None
+        self.last_chain_of_thought: Optional[str] = None
         
         print(f"🤖 ProAgentWithIntervention initialized with interpreter-based planner")
     
@@ -313,8 +330,8 @@ class ProAgentWithIntervention:
             print(f"[HUMAN] Consuming intervention at t={hm.t}: '{hm.text}'")
         
         try:
-            # Get plan from interpreter
-            plan = self.interpreter.propose_plan(state_prompt, hm, recent_history)
+            # Get plan from interpreter (pass state and agent_index for intervention recording)
+            plan = self.interpreter.propose_plan(state_prompt, hm, recent_history, state, self.agent_index)
             # Store debug info
             try:
                 self.last_plan = {
@@ -323,7 +340,11 @@ class ProAgentWithIntervention:
                 }
                 self.last_plan_category = getattr(plan, 'category', None)
                 self.last_plan_rationale = getattr(plan, 'rationale_public', None)
-                print(f"[INTP] category={self.last_plan_category} conf={self.last_plan.get('confidence')} steps={self.last_plan.get('steps')} rationale={self.last_plan_rationale}")
+                self.last_intervention_reason = getattr(plan, 'intervention_reason', None)
+                self.last_chain_of_thought = getattr(plan, 'chain_of_thought', None)
+                print(f"[INTP] category={self.last_plan_category} conf={self.last_plan.get('confidence')} steps={self.last_plan.get('steps')} rationale={self.last_plan_rationale} intervention_reason={self.last_intervention_reason}")
+                if self.last_chain_of_thought:
+                    print(f"[INTP] CoT: {self.last_chain_of_thought}")
             except Exception:
                 pass
             # Record a memory event when a new plan is computed
@@ -340,13 +361,24 @@ class ProAgentWithIntervention:
             except Exception:
                 pass
             
-            # Return first step as current ml_action
-            if not plan.steps:
-                raise RuntimeError("Interpreter returned empty plan")
-            # Use ML action directly from the step
-            ml_action = plan.steps[0]
+            # Check for low-level override
+            if hasattr(plan, 'low_level_override') and plan.low_level_override:
+                print(f"🎯 Low-level override detected: {plan.low_level_override}")
+                self.low_level_override = plan.low_level_override
+                self.low_level_override_duration = 1  # Override for 1 step
+                # Keep current ML action unchanged, but store the override
+                if not plan.steps:
+                    raise RuntimeError("Interpreter returned empty plan")
+                ml_action = plan.steps[0]
+            else:
+                # Normal ML action processing
+                if not plan.steps:
+                    raise RuntimeError("Interpreter returned empty plan")
+                ml_action = plan.steps[0]
+            
             print(f"🧠 Interpreter generated plan with {len(plan.steps)} steps")
             print(f"📋 Current ml_action: {ml_action}")
+            
             return ml_action
                 
         except Exception as e:
@@ -354,7 +386,6 @@ class ProAgentWithIntervention:
             raise
     
     # TODO: when the interpreter fails, generate a failure message and feedback to the interpreter, replan
-    
     
     # ==================== VERIFICATOR (copied from ProAgent) ====================
     
@@ -396,19 +427,17 @@ class ProAgentWithIntervention:
             pot_not_full = pot_states_dict["empty"] + self.mdp.get_partially_full_pots(pot_states_dict)
             cookable_pots = self.mdp.get_full_but_not_cooking_pots(pot_states_dict)
         elif pkg_resources.get_distribution("overcooked_ai").version == '0.0.1':
-            soup_cooking = len(pot_states_dict['onion']['cooking'])+len(pot_states_dict['tomato']['cooking']) > 0
-            soup_ready = len(pot_states_dict['onion']['ready'])+len(pot_states_dict['tomato']['ready']) > 0
-            pot_not_full = pot_states_dict["empty"] + pot_states_dict["onion"]['partially_full'] + pot_states_dict["tomato"]['partially_full']
-            cookable_pots = pot_states_dict["onion"]['{}_items'.format(self.mdp.num_items_for_soup)] + pot_states_dict["tomato"]['{}_items'.format(self.mdp.num_items_for_soup)]
+            soup_cooking = len(pot_states_dict['onion']['cooking']) > 0
+            soup_ready = len(pot_states_dict['onion']['ready']) > 0
+            pot_not_full = pot_states_dict["empty"] + pot_states_dict["onion"]['partially_full']
+            cookable_pots = pot_states_dict["onion"]['{}_items'.format(self.mdp.num_items_for_soup)]
 
         has_onion = False
-        has_tomato = False
         has_dish = False
         has_soup = False
         has_object = player.has_object()
         if has_object:
             has_onion = player.get_object().name == 'onion'
-            has_tomato = player.get_object().name == 'tomato'
             has_dish = player.get_object().name == 'dish'
             has_soup = player.get_object().name == 'soup'
         empty_counter = self.mdp.get_empty_counter_locations(state)
@@ -418,8 +447,6 @@ class ProAgentWithIntervention:
             if flag2: 
                 return False 
             return not has_object and len(self.mdp.get_onion_dispenser_locations()) > 0
-        if self.current_ml_action in ["pickup(tomato)", "pickup_tomato"]:
-            return not has_object and len(self.mdp.get_tomato_dispenser_locations()) > 0
         elif self.current_ml_action in ["pickup(dish)", "pickup_dish"]:
             flag2 = len(self.find_motion_goals(state)) == 0 
             if flag2: 
@@ -427,8 +454,6 @@ class ProAgentWithIntervention:
             return not has_object and len(self.mdp.get_dish_dispenser_locations()) > 0
         elif "put_onion_in_pot" in self.current_ml_action:
             return has_onion and len(pot_not_full) > 0
-        elif "put_tomato_in_pot" in self.current_ml_action:
-            return has_tomato and len(pot_not_full) > 0
         elif "place_obj_on_counter" in self.current_ml_action:
             return has_object and len(empty_counter) > 0
         elif "fill_dish_with_soup" in self.current_ml_action:
@@ -481,15 +506,11 @@ class ProAgentWithIntervention:
             print(f"[DBG] raw_goals(pickup_onion)={raw_goals}")
             motion_goals = raw_goals
 
-        elif self.current_ml_action in ["pickup(tomato)", "pickup_tomato"]:
-            motion_goals = am.pickup_tomato_actions(state, counter_objects)
         elif self.current_ml_action in ["pickup(dish)", "pickup_dish"]:
             # Use shared env's helper name
             motion_goals = am.pickup_dish_actions(state, counter_objects)
         elif "put_onion_in_pot" in self.current_ml_action:
             motion_goals = am.put_onion_in_pot_actions(pot_states_dict)
-        elif "put_tomato_in_pot" in self.current_ml_action:
-            motion_goals = am.put_tomato_in_pot_actions(pot_states_dict)
         elif "place_obj_on_counter" in self.current_ml_action:  
             motion_goals = self.find_shared_counters(state, self.mlam)     
             if len(motion_goals) == 0: 
@@ -501,7 +522,7 @@ class ProAgentWithIntervention:
                 soups_ready_to_cook_key = "{}_items".format(len(next_order.ingredients))
                 soups_ready_to_cook = pot_states_dict[soups_ready_to_cook_key]
             elif pkg_resources.get_distribution("overcooked_ai").version == '0.0.1':
-                soups_ready_to_cook = pot_states_dict["onion"]['{}_items'.format(self.mdp.num_items_for_soup)] + pot_states_dict["tomato"]['{}_items'.format(self.mdp.num_items_for_soup)]
+                soups_ready_to_cook = pot_states_dict["onion"]['{}_items'.format(self.mdp.num_items_for_soup)]
             only_pot_states_ready_to_cook = defaultdict(list)
             only_pot_states_ready_to_cook[soups_ready_to_cook_key] = soups_ready_to_cook
             motion_goals = am.start_cooking_actions(only_pot_states_ready_to_cook)
@@ -578,7 +599,7 @@ class ProAgentWithIntervention:
                 start_pos_and_or, goal, state
             )     
             try:
-                print(f"[DBG] plan goal={goal} cost={plan_cost} first_action={action_plan}")
+                print(f"[DBG] plan goal={goal} cost={plan_cost:.1f} first_action={action_plan}")
             except Exception:
                 pass
             if plan_cost < min_cost:
@@ -590,17 +611,113 @@ class ProAgentWithIntervention:
                 return None, Action.STAY
             else: 
                 return self.get_lowest_cost_action_and_goal(start_pos_and_or, motion_goals)
+        
+        # Debug logging for final goal selection
+        try:
+            print(f"[COLLISION_AVOID] SELECTED GOAL: {best_goal} with cost {min_cost:.1f}")
+        except Exception:
+            pass
+            
         return best_goal, best_action
 
     def real_time_planner(self, start_pos_and_or, goal, state):
         # Use shared motion planner to compute plan and cost
         try:
             action_plan, plan_nodes, plan_cost = self.mlam.motion_planner.get_plan(start_pos_and_or, goal)
-            first_action = action_plan[0] if action_plan else None
-            return first_action, plan_cost
+            
+            if not action_plan:
+                return None, np.Inf
+                
+            # Check for teammate collisions in the path
+            collision_penalty = self._calculate_collision_penalty(action_plan, start_pos_and_or, state)
+            
+            # Apply collision penalty to the cost
+            adjusted_cost = plan_cost + collision_penalty
+            
+            # Debug logging for collision avoidance
+            try:
+                if collision_penalty > 0:
+                    print(f"[COLLISION_AVOID] Goal {goal}: original_cost={plan_cost:.1f}, collision_penalty={collision_penalty}, adjusted_cost={adjusted_cost:.1f}")
+                if collision_penalty == np.Inf:
+                    print(f"[COLLISION_AVOID] Goal {goal}: PATH BLOCKED - rejecting goal")
+            except Exception:
+                pass
+            
+            # Return infinite cost if path is completely blocked
+            if collision_penalty == np.Inf:
+                return None, np.Inf
+                
+            first_action = action_plan[0]
+            return first_action, adjusted_cost
+            
         except Exception:
             # Fallback: no plan
             return None, np.Inf
+    
+    def _calculate_collision_penalty(self, action_plan, start_pos_and_or, state):
+        """
+        Calculate collision penalty for a given action plan.
+        Returns penalty cost (higher for more collisions) or np.Inf if completely blocked.
+        """
+        # Get teammate positions to avoid
+        teammate_positions = set()
+        for i, player in enumerate(state.players):
+            if i != self.agent_index:
+                teammate_positions.add(player.position)
+        
+        if not teammate_positions:
+            return 0  # No teammates to avoid
+        
+        # Simulate the path and check for collisions
+        current_pos_and_or = start_pos_and_or
+        collision_count = 0
+        total_steps = len(action_plan)
+        
+        for action in action_plan:
+            # Calculate next position based on action
+            next_pos_and_or = self._apply_action_to_pos_and_or(current_pos_and_or, action)
+            
+            # Check if next position collides with teammate
+            if next_pos_and_or[0] in teammate_positions:
+                collision_count += 1
+                
+            current_pos_and_or = next_pos_and_or
+        
+        # Calculate penalty based on collision frequency
+        if collision_count == 0:
+            return 0  # No collisions
+        elif collision_count >= total_steps * 0.5:  # More than 50% of path blocked
+            return np.Inf  # Path is essentially unusable
+        else:
+            # Penalty increases with collision frequency
+            return collision_count * 10  # Each collision adds 10 cost units
+    
+    def _apply_action_to_pos_and_or(self, pos_and_or, action):
+        """
+        Apply an action to a position and orientation, returning new pos_and_or.
+        """
+        pos, orientation = pos_and_or
+        
+        if action == Direction.NORTH:
+            new_pos = (pos[0], pos[1] - 1)
+            new_orientation = (0, -1)
+        elif action == Direction.SOUTH:
+            new_pos = (pos[0], pos[1] + 1)
+            new_orientation = (0, 1)
+        elif action == Direction.EAST:
+            new_pos = (pos[0] + 1, pos[1])
+            new_orientation = (1, 0)
+        elif action == Direction.WEST:
+            new_pos = (pos[0] - 1, pos[1])
+            new_orientation = (-1, 0)
+        elif action == Action.INTERACT:
+            new_pos = pos  # Position doesn't change
+            new_orientation = orientation
+        else:  # Action.STAY or unknown
+            new_pos = pos
+            new_orientation = orientation
+            
+        return (new_pos, new_orientation)
     
     # ==================== MAIN ACTION METHOD (copied from ProAgent) ====================
     
@@ -637,7 +754,15 @@ class ProAgentWithIntervention:
                 self.current_ml_action = "wait(1)"
                 self.time_to_wait = 1
 
-        if "wait" in self.current_ml_action:
+        # Check for low-level override first (before any other logic)
+        if self.low_level_override and self.low_level_override_duration > 0:
+            print(f"🎯 Applying low-level override: {self.low_level_override}")
+            chosen_action = LOW_LEVEL_OVERRIDE_TO_ACTION.get(self.low_level_override, Action.STAY)
+            self.low_level_override_duration -= 1
+            if self.low_level_override_duration <= 0:
+                self.low_level_override = None
+                print(f"🔄 Low-level override completed")
+        elif "wait" in self.current_ml_action:
             self.current_ml_action_steps += 1
             self.time_to_wait -= 1
             player = state.players[self.agent_index]
@@ -654,12 +779,6 @@ class ProAgentWithIntervention:
                     except Exception:
                         pass
             chosen_action = lis_actions[np.random.randint(0, len(lis_actions))]
-            if pkg_resources.get_distribution("overcooked_ai").version == '1.1.0':
-                self.prev_state = state
-                result = chosen_action, {}
-            elif pkg_resources.get_distribution("overcooked_ai").version == '0.0.1':
-                self.prev_state = state
-                result = chosen_action
         else:
             possible_motion_goals = self.find_motion_goals(state)    
             # Debug: log dispenser locations and goal count when picking up onion
@@ -678,6 +797,14 @@ class ProAgentWithIntervention:
                 print(f"[DEBUG] chosen_action={chosen_action}, current_motion_goal={current_motion_goal}")
             except Exception:
                 pass
+
+        # Handle version-specific return format
+        if pkg_resources.get_distribution("overcooked_ai").version == '1.1.0':
+            self.prev_state = state
+            result = chosen_action, {}
+        elif pkg_resources.get_distribution("overcooked_ai").version == '0.0.1':
+            self.prev_state = state
+            result = chosen_action
 
         if self.auto_unstuck and chosen_action != Action.INTERACT:
             if (
@@ -826,6 +953,8 @@ class ProAgentWithIntervention:
         self.current_timestep = 0
         self.teammate_ml_actions_dict = {}
         self.teammate_intentions_dict = {}
+        self.low_level_override = None
+        self.low_level_override_duration = 0
         self.memory = AgentMemory()
         self._human_inbox.clear()
         self._recent_history.clear()
@@ -840,21 +969,7 @@ class ProAgentWithIntervention:
             self._human_inbox.append(text.strip())
             self._intervention_history.append(text.strip())
             print(f"🎯 Human intervention received: '{text.strip()}'")
-            # Record structured memory event of the human intervention
-            try:
-                t = int(getattr(self.mdp, 'timestep', getattr(self, 'current_timestep', 0)))
-            except Exception:
-                t = int(getattr(self, 'current_timestep', 0))
-            self.memory.write_events([
-                {"t": t,
-                 "type": "human_msg",
-                 "text": text.strip(),
-                 "agent_ml_action": self.current_ml_action,
-                 "state": {
-                     "ego_pos": [int(self.mdp.state.players[self.agent_index].position[0]), int(self.mdp.state.players[self.agent_index].position[1])] if hasattr(self.mdp, 'state') else None,
-                     "mate_pos": [int(self.mdp.state.players[1-self.agent_index].position[0]), int(self.mdp.state.players[1-self.agent_index].position[1])] if hasattr(self.mdp, 'state') else None
-                 }}
-            ])
+            # Note: State information will be captured when the intervention is processed in generate_ml_action
             
             # Immediately override current ML action to process intervention
             self.current_ml_action = None

@@ -5,7 +5,16 @@ import time
 import re
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List, Dict, Any, Literal, Tuple
-from openai import OpenAI  
+from openai import OpenAI
+
+try:
+	from jsonschema import validate, ValidationError
+except ImportError:
+	# Fallback if jsonschema is not available
+	def validate(instance, schema):
+		pass
+	class ValidationError(Exception):
+		pass  
 
 PROAGENT_ALLOWED_ML_ACTIONS = {
 	"pickup_onion",
@@ -36,7 +45,11 @@ class Plan:
 	confidence: float
 	rationale_public: str                 # <= 1 sentence, no CoT
 	category: Category                    # model's classification of the human msg
+	teammate_behavior: str = ""           # Add this field
 	memory_writes: List[Dict[str, Any]] = field(default_factory=list)
+	low_level_override: Optional[str] = None  # Direct low-level action override (e.g., "move_north", "wait", "interact")
+	intervention_reason: str = ""         # LLM's inference of why human provided this intervention
+	chain_of_thought: str = ""           # Explicit CoT reasoning (≤6 lines)
 
 	def to_dict(self) -> Dict[str, Any]:
 		return {
@@ -44,7 +57,11 @@ class Plan:
 			"confidence": self.confidence,
 			"rationale_public": self.rationale_public,
 			"category": self.category,
+			"teammate_behavior": self.teammate_behavior,  # Include it
 			"memory_writes": self.memory_writes,
+			"low_level_override": self.low_level_override,
+			"intervention_reason": self.intervention_reason,
+			"chain_of_thought": self.chain_of_thought,
 		}
 
 class AgentMemory:
@@ -53,7 +70,7 @@ class AgentMemory:
 	- semantic: long-lived facts, rules, and dynamic world state
 	- episodic: recent events for summarization
 	"""
-	def __init__(self, episodic_cap: int = 120, mdp=None):
+	def __init__(self, episodic_cap: int = 500, mdp=None):
 		self.semantic: Dict[str, Any] = {
 			# Static layout & traffic
 			"layout_facts": {
@@ -72,13 +89,8 @@ class AgentMemory:
 			},
 			# Teammate hypothesis & coordination contract
 			"teammate_model": {
-				"current_role": "unknown",
-				"role_confidence": 0.0,
 				"since_t": None,
 				"behavior_description": "",
-				"last_updated": None,
-				# Optional: reliability score influences how much we defer
-				"reliability": 0.5
 			},
 			# Human/operator preferences or "house rules"
 			"human_prefs": {
@@ -94,6 +106,8 @@ class AgentMemory:
 			"hotspots": [],
 			# Things to clarify when vague messages show up
 			"open_questions": [],
+			# Learned intervention patterns to avoid future human corrections
+			"intervention_patterns": [],
 		}
 		self.episodic: List[Dict[str, Any]] = []
 		self._cap = episodic_cap
@@ -126,15 +140,15 @@ class AgentMemory:
 				# Some layouts might not have all object types
 				layout_facts[facts_key] = []
 		
-		# Initialize counters (typically all non-blocked positions)
+		# Initialize counters (typically 'X' positions in Overcooked-AI)
 		try:
 			# Get the terrain map to identify counter positions
 			terrain = mdp.terrain_mtx
 			counters = []
 			for y in range(terrain.shape[0]):
 				for x in range(terrain.shape[1]):
-					# Counter positions are typically ' ' (space) in the terrain
-					if terrain[y, x] == ' ':
+					# Counter positions are typically 'X' in Overcooked-AI layouts
+					if terrain[y, x] == 'X':
 						counters.append({"pos": [x, y]})
 			layout_facts["counters"] = counters
 		except AttributeError:
@@ -157,8 +171,9 @@ class AgentMemory:
 				notes.append(f"plan[{','.join(e.get('steps', []))}]")
 			elif e.get("type") == "result":
 				notes.append(f"result[{e.get('macro')}:{'ok' if e.get('ok') else 'fail'}]")
-			elif e.get("type") == "human_msg":
-				notes.append(f"human[{e.get('kind')}]")
+			elif e.get("type") == "human_intervention":
+				corrected_action = e.get('corrected_ml_action', 'pending')
+				notes.append(f"intervention[{corrected_action}]")
 			elif e.get("type") == "obs":
 				notes.append(f"mate_obs[{e.get('mate','?')}]")
 		if not notes:
@@ -211,18 +226,34 @@ class AgentMemory:
 			elif isinstance(v, dict) and isinstance(self.semantic.get(k, {}), dict):
 				# Special handling for teammate_model to preserve behavior_description
 				if k == "teammate_model" and "behavior_description" in v:
-					# Update behavior description with timestamp
-					v["last_updated"] = time.time()
+					# Update behavior description with since_t timestamp
+					pass  # since_t is already set in the write
 				# Deep merge for nested dicts like layout_facts and world_state
 				self._deep_merge(self.semantic[k], v)
 			else:
 				self.semantic[k] = v
+
+	def _merge_list_by_pos(self, dest: List[Dict[str, Any]], src: List[Dict[str, Any]], key="pos", cap=32):
+		"""Merge lists by position to avoid duplicates."""
+		idx = {tuple(it.get(key, [])): i for i, it in enumerate(dest) if key in it}
+		for it in src:
+			p = tuple(it.get(key, []))
+			if p in idx:
+				dest[idx[p]].update(it)
+			else:
+				dest.append(it)
+		if len(dest) > cap:
+			del dest[:-cap]
 
 	def _deep_merge(self, base_dict: Dict[str, Any], update_dict: Dict[str, Any]) -> None:
 		"""Deep merge update_dict into base_dict."""
 		for key, value in update_dict.items():
 			if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
 				self._deep_merge(base_dict[key], value)
+			elif key in {"pot_status", "onion_caches"} and isinstance(value, list):
+				base = base_dict.get(key, [])
+				self._merge_list_by_pos(base, value)
+				base_dict[key] = base
 			else:
 				base_dict[key] = value
 
@@ -255,11 +286,8 @@ class AgentMemory:
 				"dish_availability": ws.get("dish_availability", 0),
 			},
 			"teammate_model": {
-				"role": tm.get("current_role"),
-				"role_confidence": tm.get("role_confidence"),
+				"since_t": tm.get("since_t"),
 				"behavior_description": tm.get("behavior_description"),
-				"reliability": tm.get("reliability"),
-				"last_updated": tm.get("last_updated"),
 			},
 			"human_prefs": sem.get("human_prefs", {}),
 			"playbook": sem.get("playbook", [])[-4:],  # small slice
@@ -272,6 +300,8 @@ class AgentMemory:
 class HumanMessage:
 	t: int
 	text: str
+
+# Removed hand-coded parsing function - LLM will detect low-level commands through reasoning
 
 def _extract_first_json_object(text: str) -> Tuple[dict | None, str | None]:
     """
@@ -348,13 +378,58 @@ class LLMClient:
 
             # Attempt to parse cleanly
             try:
-                return json.loads(text_out)
+                obj = json.loads(text_out)
             except json.JSONDecodeError:
                 # Extract first JSON block if model returned explanation text
                 obj, err = _extract_first_json_object(text_out)
                 if obj is None:
                     raise ValueError(f"Could not parse JSON: {err}\nRaw: {text_out}")
-                return obj
+            
+            # Debug: log the raw LLM response
+            print(f"[LLM-DEBUG] Raw LLM response: {obj}")
+            
+            # Pre-validate repair: if any low-level token leaked into steps, move it to low_level_override
+            try:
+                low_level_enums = [v for v in PLAN_JSON_SCHEMA["properties"]["low_level_override"]["enum"] if v is not None]
+                steps_list = obj.get("steps", []) if isinstance(obj.get("steps", []), list) else []
+                leaked = [s for s in steps_list if isinstance(s, str) and s in low_level_enums]
+                if leaked:
+                    # Prefer explicit low_level_override from the model; otherwise use the first leaked token
+                    if not obj.get("low_level_override"):
+                        obj["low_level_override"] = leaked[0]
+                    # Replace steps with a valid placeholder ML action to satisfy schema
+                    obj["steps"] = ["wait(1)"]
+                    # Strengthen confidence for direct overrides if not provided
+                    obj.setdefault("confidence", 1.0)
+                    obj.setdefault("rationale_public", f"Direct low-level command: {obj['low_level_override']}")
+            except Exception:
+                pass
+            
+            # Validate against schema and repair if needed
+            try:
+                validate(instance=obj, schema=schema)
+            except ValidationError as ve:
+                print(f"[LLM-DEBUG] Validation error: {ve}")
+                print(f"[LLM-DEBUG] Problematic object: {obj}")
+                # Minimal repair for required fields
+                obj.setdefault("steps", ["wait(1)"])
+                obj.setdefault("confidence", 0.5)
+                obj.setdefault("rationale_public", "")
+                
+                # Fix category field - ensure it's always a valid enum value
+                category = obj.get("category", "vague")
+                if not category or category not in ["policy", "env", "teammate", "vague"]:
+                    obj["category"] = "vague"
+                
+                obj.setdefault("teammate_behavior", "")
+                obj.setdefault("memory_writes", [])
+                obj.setdefault("low_level_override", None)
+                obj.setdefault("intervention_reason", "")
+                
+                # Try validation again - if it still fails, let it raise
+                validate(instance=obj, schema=schema)
+            
+            return obj
 
         except Exception as e:
             raise RuntimeError(f"LLMClient.respond_json failed: {e}")
@@ -377,10 +452,21 @@ PLAN_JSON_SCHEMA: Dict[str, Any] = {
         "rationale_public": {"type": "string", "maxLength": 180},
         "category": {"type": "string", "enum": ["policy", "env", "teammate", "vague"]},
         "teammate_behavior": {"type": "string", "maxLength": 220},
+        "chain_of_thought": {"type": "string", "maxLength": 500},
         "memory_writes": {
             "type": "array",
             "items": {"type": "object"},
             "default": []
+        },
+        "low_level_override": {
+            "type": ["string", "null"],
+            "enum": ["move_north", "move_south", "move_east", "move_west", "wait", "interact", "stay", None],
+            "default": None
+        },
+        "intervention_reason": {
+            "type": "string",
+            "maxLength": 300,
+            "default": ""
         }
     }
 }
@@ -397,7 +483,7 @@ def _load_system_rules() -> str:
 		return (
 			"You control Player0 in Overcooked-AI. Goal: deliver soups quickly and safely.\n"
 			"Use ONLY these ML actions: " + ", ".join(ALL_VALID_ML_ACTIONS) + "\n"
-			"Return JSON with steps, confidence, rationale_public, category, and memory_writes."
+			"Return JSON with steps, confidence, rationale_public, category, teammate_behavior, and memory_writes."
 		)
 
 SYSTEM_RULES = _load_system_rules()
@@ -413,13 +499,122 @@ class AdvancedLLMInterpreter:
 		self.llm = llm
 		self.memory = memory
 		self.history_horizon = history_horizon
+	
+	def _record_human_intervention(self, human_msg: HumanMessage, state, agent_index: int):
+		"""Record human intervention with complete state information."""
+		try:
+			# Capture state information
+			ego_pos = None
+			mate_pos = None
+			ego_holding = None
+			mate_holding = None
+			
+			players = getattr(state, "players", [])
+			if len(players) > agent_index:
+				ego = players[agent_index]
+				ego_pos = [int(ego.position[0]), int(ego.position[1])]
+				ego_holding = str(ego.held_object.name) if ego.held_object else "nothing"
+			if len(players) > (1 - agent_index):
+				mate = players[1 - agent_index]
+				mate_pos = [int(mate.position[0]), int(mate.position[1])]
+				mate_holding = str(mate.held_object.name) if mate.held_object else "nothing"
+			
+			# Record the intervention with complete state information
+			self.memory.write_events([
+				{"t": human_msg.t,
+				 "type": "human_intervention",
+				 "text": human_msg.text,
+				 "state": {
+					 "ego_pos": ego_pos,
+					 "ego_holding": ego_holding,
+					 "mate_pos": mate_pos,
+					 "mate_holding": mate_holding
+				 },
+				 "previous_ml_action": None,  # Will be filled by caller
+				 "corrected_ml_action": None  # Will be filled when action is generated
+				 }
+			])
+			print(f"📝 Recorded intervention with state: ego_pos={ego_pos}, ego_holding={ego_holding}, mate_pos={mate_pos}, mate_holding={mate_holding}")
+		except Exception as e:
+			print(f"⚠️ Error recording intervention: {e}")
+	
+	def update_intervention_with_corrected_action(self, corrected_ml_action: str):
+		"""Update the most recent human intervention record with the corrected ML action."""
+		try:
+			# Find the most recent human_intervention event and update it
+			for i in range(len(self.memory.episodic) - 1, -1, -1):
+				event = self.memory.episodic[i]
+				if event.get("type") == "human_intervention" and event.get("corrected_ml_action") is None:
+					event["corrected_ml_action"] = corrected_ml_action
+					print(f"✅ Updated intervention record with corrected action: {corrected_ml_action}")
+					break
+		except Exception as e:
+			print(f"⚠️ Error updating intervention record: {e}")
+
+	def _store_intervention_pattern(self, plan: Plan, human_msg: HumanMessage, state=None) -> None:
+		"""Store intervention pattern in memory for future learning."""
+		if not plan.intervention_reason or state is None:
+			return
+		
+		try:
+			# Extract key state features for pattern matching
+			ego_pos = None
+			mate_pos = None
+			ego_holding = None
+			mate_holding = None
+			
+			players = getattr(state, "players", [])
+			if len(players) > 0:
+				ego = players[0]  # Assuming agent_index=0 for ego
+				ego_pos = [int(ego.position[0]), int(ego.position[1])]
+				ego_holding = str(ego.held_object.name) if ego.held_object else "nothing"
+			if len(players) > 1:
+				mate = players[1]
+				mate_pos = [int(mate.position[0]), int(mate.position[1])]
+				mate_holding = str(mate.held_object.name) if mate.held_object else "nothing"
+			
+			pattern = {
+				"timestamp": human_msg.t,
+				"human_message": human_msg.text,
+				"intervention_reason": plan.intervention_reason,
+				"context": {
+					"ego_pos": ego_pos,
+					"ego_holding": ego_holding,
+					"mate_pos": mate_pos,
+					"mate_holding": mate_holding,
+					"terrain_shape": state.terrain_mtx.shape if hasattr(state, 'terrain_mtx') else None,
+				},
+				"action_taken": plan.steps[0] if plan.steps else None,
+				"low_level_override": plan.low_level_override,
+			}
+			
+			# Store in memory
+			if "intervention_patterns" not in self.memory.semantic:
+				self.memory.semantic["intervention_patterns"] = []
+			
+			self.memory.semantic["intervention_patterns"].append(pattern)
+			
+			# Keep only recent patterns (last 50)
+			if len(self.memory.semantic["intervention_patterns"]) > 50:
+				self.memory.semantic["intervention_patterns"] = self.memory.semantic["intervention_patterns"][-50:]
+			
+			print(f"[MEMORY] Stored intervention pattern: {plan.intervention_reason}")
+			
+		except Exception as e:
+			print(f"⚠️ Error storing intervention pattern: {e}")
 
 	def propose_plan(
 		self,
 		state_prompt: str,
 		human_msg: HumanMessage,
 		recent_history: List[Dict[str, Any]],
+		state=None,  # Add state parameter for intervention recording
+		agent_index=None,  # Add agent_index for intervention recording
 	) -> Plan:
+		# Record intervention with complete state information if human message exists
+		if human_msg.text.strip() and state is not None and agent_index is not None:
+			self._record_human_intervention(human_msg, state, agent_index)
+		
 		user_payload = {
 			"state_prompt": state_prompt,
 			"recent_history": recent_history[-self.history_horizon:],
@@ -430,6 +625,7 @@ class AdvancedLLMInterpreter:
 			}
 		}
 
+		# Use LLM for all interventions - it will detect low-level commands through reasoning
 		raw = self.llm.respond_json(PLAN_JSON_SCHEMA, SYSTEM_RULES, user_payload)
 		
 		# Debug: Check if LLM returned memory_writes
@@ -447,17 +643,21 @@ class AdvancedLLMInterpreter:
 			else:
 				print(f"[WARNING] Invalid ML action '{step}', skipping")
 		
-		# Determine category: empty string if no human intervention, otherwise use LLM response or default
-		category = ""
-		if human_msg.text.strip():  # If there's actual human intervention text
-			category = raw.get("category", "vague")
+		# Always use a valid category (never empty string)
+		category = raw.get("category", "vague")
+		if not category or category.strip() == "":
+			category = "vague"
 		
 		plan = Plan(
 			steps=validated_steps,
 			confidence=float(raw.get("confidence", 0.5)),
 			rationale_public=str(raw.get("rationale_public", ""))[:180],
 			category=category,
+			teammate_behavior=str(raw.get("teammate_behavior", ""))[:220],
 			memory_writes=raw.get("memory_writes", []),
+			low_level_override=raw.get("low_level_override"),
+			intervention_reason=str(raw.get("intervention_reason", ""))[:300],
+			chain_of_thought=str(raw.get("chain_of_thought", ""))[:500],
 		)
 
 		# Plan hygiene checks
@@ -476,7 +676,7 @@ class AdvancedLLMInterpreter:
 			plan.memory_writes.append({
 				"teammate_model": {
 					"behavior_description": tb,
-					"last_updated": time.time()
+					"since_t": human_msg.t
 				}
 			})
 		
@@ -488,10 +688,20 @@ class AdvancedLLMInterpreter:
 			self.memory.upsert_semantic(safe_patch)
 		else:
 			print(f"[MEMORY] No safe patch generated from {len(plan.memory_writes)} writes")
-		self.memory.write_events([
-			{"t": human_msg.t, "type": "human_msg", "kind": plan.category, "text": human_msg.text},
-			{"t": human_msg.t, "type": "plan", "steps": plan.steps, "conf": plan.confidence}
-		])
+		# Only write plan event if there's no human intervention (human_intervention type is written by apply_human_intervention)
+		if not human_msg.text.strip():
+			self.memory.write_events([
+				{"t": human_msg.t, "type": "plan", "steps": plan.steps, "conf": plan.confidence}
+			])
+		else:
+			# For human interventions, update the intervention with corrected action and record plan
+			self.update_intervention_with_corrected_action(plan.steps[0] if plan.steps else "none")
+			self.memory.write_events([
+				{"t": human_msg.t, "type": "plan", "steps": plan.steps, "conf": plan.confidence, "category": plan.category}
+			])
+			
+			# Store intervention pattern for learning
+			self._store_intervention_pattern(plan, human_msg, state)
 
 		return plan
 
@@ -499,7 +709,7 @@ class AdvancedLLMInterpreter:
 		"""
 		Convert a list of 'memory_writes' entries into a single semantic patch.
 		Keep it conservative: allow updates only in whitelisted regions and small payloads.
-		Category-based gating for different intervention types.
+		Allow small world_state patches for any category.
 		Expected patterns (examples):
 		  {"teammate_model": {"current_role":"plate_runner","role_confidence":0.7,"since_t":123}}
 		  {"human_prefs": {"prefer_left_pot": true}}
@@ -511,11 +721,19 @@ class AdvancedLLMInterpreter:
 			print(f"[MEMORY] No writes to gate")
 			return patch
 		print(f"[MEMORY] Gating {len(writes)} writes with category: {category}")
-			
-		# Category-based whitelist - env messages can update world_state more freely
-		ALLOWED_KEYS = {"teammate_model", "human_prefs", "playbook", "afford_safety", "hotspots", "open_questions", "layout_facts"}
-		if category == "env":
-			ALLOWED_KEYS.add("world_state")
+		
+		# Allow small world_state patches for any category
+		ALLOWED_KEYS = {"teammate_model", "human_prefs", "playbook", "afford_safety", "hotspots", "open_questions", "layout_facts", "world_state", "intervention_patterns"}
+		
+		MAX_BYTES_PER_WRITE = 2000
+		MAX_WS_ITEMS = 6
+		
+		def _is_small_world_state(v: Any) -> bool:
+			if not isinstance(v, dict):
+				return True
+			ps = v.get("pot_status", [])
+			oc = v.get("onion_caches", [])
+			return len(ps) <= MAX_WS_ITEMS and len(oc) <= MAX_WS_ITEMS
 		
 		for i, w in enumerate(writes):
 			print(f"[MEMORY] Processing write {i}: {list(w.keys())}")
@@ -523,9 +741,13 @@ class AdvancedLLMInterpreter:
 				if k not in ALLOWED_KEYS:
 					print(f"[MEMORY] Rejecting key '{k}' (not in ALLOWED_KEYS)")
 					continue
-				if isinstance(v, (dict, list)) and len(json.dumps(v)) > 2000:
+				if isinstance(v, (dict, list)) and len(json.dumps(v)) > MAX_BYTES_PER_WRITE:
 					print(f"[MEMORY] Rejecting key '{k}' (payload too large)")
 					continue
+				if k == "world_state" and not _is_small_world_state(v):
+					print(f"[MEMORY] Rejecting world_state (too large)")
+					continue
+				
 				print(f"[MEMORY] Accepting key '{k}'")
 				if k not in patch:
 					patch[k] = v

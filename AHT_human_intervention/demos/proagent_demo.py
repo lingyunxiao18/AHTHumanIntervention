@@ -18,6 +18,11 @@ from shared.envs.envs.overcooked.overcooked_ai_py.mdp.overcooked_env import Over
 from shared.envs.envs.overcooked.overcooked_ai_py.mdp.actions import Action, Direction
 from shared.envs.envs.overcooked.overcooked_ai_py.visualization.state_visualizer import StateVisualizer
 from shared.agents.onion_specialist_agent import OnionSpecialistAgent
+from shared.agents.dish_specialist_agent import DishSpecialistAgent
+from shared.agents.greedy_agent import GreedyAgent
+from shared.agents.random_agent import RandomAgent
+from shared.agents.simple_handcoded_agent import SimpleHandcodedAgent
+from shared.agents.stay_agent import StayAgent
 
 # Use ProAgent harness utilities and agent
 import utils as pro_utils  # type: ignore
@@ -62,6 +67,12 @@ def main():
     parser.add_argument('--layout_name', type=str, default=None, help='Direct Overcooked layout name (overrides --layout)')
     parser.add_argument('--horizon', type=int, default=500)
     parser.add_argument('--random_start', action='store_true', help='Randomize player starting positions')
+    parser.add_argument(
+        '--teammate',
+        type=str,
+        default='onion_specialist',
+        help='Teammate agent type: onion_specialist, dish_specialist, greedy, random, stay, hand_coded'
+    )
     args = parser.parse_args()
 
     layout = args.layout
@@ -77,11 +88,23 @@ def main():
 
 	# Agents: Player0 = ProAgentWithIntervention, Player1 = OnionSpecialistAgent
     # Create base ProAgent first to get MLAM, then wrap with intervention
-    base_agent = pro_utils.make_agent('ProAgent', mdp, layout, model='gpt-4.1-mini', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=True)
+    base_agent = pro_utils.make_agent('ProAgent', mdp, layout, model='gpt-4.1-mini', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=False)
     
     # Create ProAgentWithIntervention using the same MLAM
-    p0 = ProAgentWithIntervention(base_agent.mlam, layout, model='gpt-4.1-mini', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=True)
-    p1 = OnionSpecialistAgent(mdp, agent_idx=1, agent_name="OnionSpec")
+    p0 = ProAgentWithIntervention(base_agent.mlam, layout, model='gpt-4.1-mini', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=False)
+
+    # Map teammate argument to agent constructors
+    teammate_key = (args.teammate or 'onion_specialist').strip().lower()
+    teammate_map = {
+        'onion_specialist': lambda mdp: OnionSpecialistAgent(mdp, agent_idx=1, agent_name='OnionSpec'),
+        'dish_specialist': lambda mdp: DishSpecialistAgent(mdp, agent_idx=1, agent_name='DishSpec'),
+        'greedy': lambda mdp: GreedyAgent(mdp, agent_idx=1, agent_name='Greedy'),
+        'random': lambda mdp: RandomAgent(mdp, agent_idx=1, agent_name='Random'),
+        'stay': lambda mdp: StayAgent(mdp, agent_idx=1, agent_name='Stay'),
+        'hand_coded': lambda mdp: SimpleHandcodedAgent(mdp, agent_idx=1, agent_name='HandCoded')
+    }
+    p1_factory = teammate_map.get(teammate_key, teammate_map['onion_specialist'])
+    p1 = p1_factory(mdp)
     # Ensure agent indices are set for shared Agent API
     if hasattr(p0, 'set_agent_index'):
         p0.set_agent_index(0)
@@ -92,7 +115,7 @@ def main():
     pygame.init()
     # Slightly narrower to better fit on screen
     screen = pygame.display.set_mode((1400, 800))
-    pygame.display.set_caption(f'ProAgentWithIntervention Demo [{layout_name}] (Player0) + OnionSpecialist (Player1)')
+    pygame.display.set_caption(f'ProAgentWithIntervention Demo [{layout_name}] (Player0) + {getattr(p1, "agent_name", type(p1).__name__)} (Player1)')
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 24)
     viz = StateVisualizer()
@@ -105,6 +128,7 @@ def main():
     print("   - Confidence scoring")
     print("   - Structured rationale output")
     print("   - Memory persistence across interventions")
+    print("   - Explicit Chain-of-Thought display in pygame window")
     print("")
     print("🎮 Controls:")
     print("   - SPACE: Pause/Resume")
@@ -162,6 +186,33 @@ def main():
         else:
             second = second + "..."
         return [first, second]
+
+    # Wrap chain of thought text into multiple lines with proper formatting
+    def wrap_multiline_text(label, content, font_obj, max_width, max_lines=6):
+        if not content:
+            return [f"{label}(empty)"]
+        
+        # Split content by newlines to preserve CoT structure
+        lines = content.split('\n')
+        result_lines = []
+        
+        # Add the label to the first line
+        first_line = f"{label}{lines[0]}" if lines else label
+        result_lines.extend(wrap_text(first_line, font_obj, max_width))
+        
+        # Process remaining lines with proper indentation
+        for line in lines[1:]:
+            if line.strip():  # Skip empty lines
+                # Add indentation to show it's part of the CoT
+                indented_line = f"    {line.strip()}"
+                result_lines.extend(wrap_text(indented_line, font_obj, max_width))
+        
+        # Limit to max_lines and add ellipsis if truncated
+        if len(result_lines) > max_lines:
+            result_lines = result_lines[:max_lines-1]
+            result_lines.append("    ...")
+        
+        return result_lines
 
     while step < 200:
         for event in pygame.event.get():
@@ -247,8 +298,6 @@ def main():
                 ml = getattr(p0, 'current_ml_action', None)
                 # Get new interpreter plan info
                 last_plan = getattr(p0, 'last_plan', None)
-                last_plan_category = getattr(p0, 'last_plan_category', None)
-                last_plan_rationale = getattr(p0, 'last_plan_rationale', None)
                 last_plan_confidence = last_plan.get('confidence') if last_plan else None
                 
                 a0_conv = convert_action(a0)
@@ -256,8 +305,12 @@ def main():
                 joint = (a0_conv, a1_conv)
                 
                 # Enhanced logging with new interpreter output
-                print(f"[STEP {step}] Interpreter Category: {last_plan_category}, Confidence: {last_plan_confidence}")
-                print(f"[STEP {step}] Interpreter Rationale: {last_plan_rationale}")
+                last_intervention_reason = getattr(p0, 'last_intervention_reason', None)
+                if last_intervention_reason:
+                    print(f"[STEP {step}] 🎯 Intervention Reason: {last_intervention_reason}")
+                last_chain_of_thought = getattr(p0, 'last_chain_of_thought', None)
+                if last_chain_of_thought:
+                    print(f"[STEP {step}] 🧠 Chain of Thought: {last_chain_of_thought}")
                 if last_plan:
                     print(f"[STEP {step}] Interpreter Plan Steps: {last_plan.get('steps', [])}")
                 print(f"[STEP {step}] P0_action_raw={a0}, P0_action_conv={a0_conv}, P0_ml_action={ml}")
@@ -291,13 +344,11 @@ def main():
         
         # Add interpreter status information
         try:
-            last_plan = getattr(p0, 'last_plan', None)
-            last_plan_category = getattr(p0, 'last_plan_category', None)
-            last_plan_rationale = getattr(p0, 'last_plan_rationale', None)
+            last_plan = getattr(p0, 'last_plan', None)  
+            last_intervention_reason = getattr(p0, 'last_intervention_reason', None)
+            last_chain_of_thought = getattr(p0, 'last_chain_of_thought', None)
             last_plan_confidence = last_plan.get('confidence') if last_plan else None
             
-            if last_plan_category:
-                info_lines.append(f'Interpreter Category: {last_plan_category}')
             if last_plan_confidence is not None:
                 info_lines.append(f'Confidence: {last_plan_confidence:.2f}')
             if last_plan and last_plan.get('steps'):
@@ -305,10 +356,14 @@ def main():
                 if len(last_plan.get('steps', [])) > 3:
                     steps_str += '...'
                 info_lines.append(f'Plan Steps: {steps_str}')
-            if last_plan_rationale:
-                # Defer wrapping until we know panel width
-                info_lines.append(('RATIONAL', last_plan_rationale))
-                
+            # Rationale removed - using CoT instead
+            if last_intervention_reason:
+                # Show intervention reason with special formatting
+                info_lines.append(('INTERVENTION_REASON', last_intervention_reason))
+            if last_chain_of_thought:
+                # Show chain of thought with special formatting
+                info_lines.append(('CHAIN_OF_THOUGHT', last_chain_of_thought))
+            
             # Show current ML action
             current_ml = getattr(p0, 'current_ml_action', None)
             if current_ml:
@@ -322,13 +377,22 @@ def main():
             try:
                 mem_events = list(getattr(p0.memory, 'episodic', []))[-4:]
                 for ev in mem_events:
-                    if ev.get('type') == 'human_msg':
+                    if ev.get('type') == 'human_intervention':
                         info_lines.append(('MEM', f"t{ev.get('t')}: human[{(ev.get('text') or '')[:60]}]"))
                     elif ev.get('type') == 'plan':
                         steps = ev.get('steps', [])
                         info_lines.append(('MEM', f"t{ev.get('t')}: plan[{', '.join(steps[:3])}{'...' if len(steps)>3 else ''}] conf={ev.get('conf'):.2f}"))
                     else:
                         info_lines.append(('MEM', f"t{ev.get('t')}: {ev.get('type')}"))
+                
+                # Show recent human interventions specifically
+                all_events = list(getattr(p0.memory, 'episodic', []))
+                human_interventions = [ev for ev in all_events if ev.get('type') == 'human_intervention']
+                if human_interventions:
+                    recent_interventions = human_interventions[-2:]  # Show last 2 interventions
+                    for i, interv in enumerate(recent_interventions):
+                        label = 'Last intervention' if i == 0 else 'Prev intervention'
+                        info_lines.append(('INTERVENTION', f"{label}: {interv.get('text', '')[:80]}"))
             except Exception:
                 pass
             
@@ -356,13 +420,8 @@ def main():
         if intervention_mode:
             info_lines.append(f'Intervention: {intervention_text}_')
         else:
-            # Show recent intervention history
-            intervention_history = p0.get_intervention_history()
-            if intervention_history:
-                recent_interventions = intervention_history[-2:]  # Show last 2 interventions
-                for i, interv in enumerate(recent_interventions):
-                    label = 'Last intervention' if i == 0 else 'Prev intervention'
-                    info_lines.append(f'{label}: {interv}')
+            # Recent intervention history is now shown in the memory debug section above
+            pass
             
         # Render UI in a wider right-side panel with word wrapping
         text_panel_x = img.get_width() + 30
@@ -380,6 +439,15 @@ def main():
                 if tag == 'RATIONAL':
                     wrapped_lines.extend(wrap_two_lines('Rationale: ', content, font, text_panel_width))
                     continue
+                if tag == 'INTERVENTION_REASON':
+                    wrapped_lines.extend(wrap_two_lines('Intervention Reason: ', content, font, text_panel_width))
+                    continue
+                if tag == 'CHAIN_OF_THOUGHT':
+                    wrapped_lines.extend(wrap_multiline_text('Chain of Thought: ', content, font, text_panel_width, max_lines=6))
+                    continue
+                if tag == 'INTERVENTION':   
+                    wrapped_lines.extend(wrap_two_lines('Intervention: ', content, font, text_panel_width))
+                    continue
                 if tag == 'MEM':
                     wrapped_lines.extend(wrap_two_lines('Mem: ', content, font, text_panel_width))
                     continue
@@ -394,7 +462,7 @@ def main():
             screen.blit(txt, (text_panel_x, text_panel_y + i * 22))
 
         pygame.display.flip()
-        clock.tick(5)
+        clock.tick(1)  # Much slower for debugging
 
     pygame.quit()
 
