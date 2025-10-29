@@ -1,485 +1,197 @@
-# NeurIPS 2024 D&B Track - ZSC-Eval: An Evaluation Toolkit and Benchmark for Multi-agent Zero-shot Coordination
+# PARTNR: A Benchmark for Planning and Reasoning in Embodied Multi-Agent Tasks
+
+This is the official repository for the PARTNR benchmark. It includes instructions for downloading and running the PARTNR benchmark in the Habitat simulator and implements Large Language Model (LLM) based planners as baselines.
+
+[Project Website](https://aihabitat.org/partnr/) | [Paper](https://arxiv.org/pdf/2411.00081)
+
+<img src="docs/cover_fig.png" width="100%"/>
 
 ## Overview
-<div align=center>
-<img src="assets/ZSC-Eval.png" width="800px">
-</div>
 
-This repository is the official implementation of [ZSC-Eval: An Evaluation Toolkit and Benchmark for Multi-agent Zero-shot Coordination](https://arxiv.org/abs/2310.05208).
+This codebase contains abstractions for enabling agents to follow free form natural language instructions in the Habitat simulator. The main abstractions are - **Agent**, **Planner**, **Tool**, and **Skill**. The agent has access to a set of tools which can allow it to perceive the state of the environment, or interact with the environment using low level skills. This repository also contains  the codebase for generating PARTNR datasets using LLMs.
 
-ZSC-Eval is a comprehensive and convenient evaluation toolkit and benchmark for zero-shot coordination (ZSC) algorithms, including partner candidates generation via behavior-preferring rewards, partners selection via Best-Response Diversity (BR-Div), and ZSC capability measurement via Best-Response Proximity (BR-Prox).
+## Code Organization
 
-<div align=center>
-<img src="assets/table_comparison.png" width="600px">
-</div>
+Below are the details of various important directories and classes.
 
-
-This repo includes:
-- Evaluation Framework
-    - Generation and Selection of Behavior-preferring Evaluation Partners
-    - Measurement of ZSC capability via Best-Response Proximity and other metrics
-- Environments Support
-    - Overcooked-ai 🧑‍🍳
-    - Overcooked-ai with Multiple Recipes 🧑‍🍳 (New Coordination Challenge!)
-    - Google Research Football ⚽️
-- ZSC Algorithms Implementation
-    - [FCP: Fictitious Co-Play](https://arxiv.org/abs/2110.08176)
-    - [MEP: Maximum Entropy Population-based training](https://arxiv.org/abs/2112.11701)
-    - [TrajeDi: Trajectory Diversity PBT](https://proceedings.mlr.press/v139/lupu21a.html)
-    - [HSP: Hidden-utility Self-Play](https://arxiv.org/abs/2302.01605)
-    - [COLE: Cooperative Open-ended Learning](https://arxiv.org/abs/2302.04831)
-    - [E3T: Efficient End-to-End Training](https://papers.nips.cc/paper_files/paper/2023/hash/07a363fd2263091c2063998e0034999c-Abstract-Conference.html)
-    - [SP: Self-play](https://github.com/marlbenchmark/on-policy)
-- A Human Study Platform
-    - Real-time Overcooked game play
-    - Subjective Ranking
-    - Trajectories Collection
-- Benchmarks
-    - Benchmark of ZSC Algorithms under ZSC-Eval
-    - Benchmark of ZSC Algorithms under Human Evaluation
-
-## 🗺️ Supported Environments
-
-### 🧑‍🍳 Overcooked
-
-[Overcooked](https://github.com/HumanCompatibleAI/overcooked_ai) is a simulation environment for reinforcement learning derived from the Overcooked! video game and popular for coordination problems.
-
-The Overcooked environment features a two-player collaborative game structure with shared rewards, where each player assumes the role of a chef in a kitchen, working together to prepare and serve soup for a team reward.
-
-<div align=center>
-<img src="assets/overcooked.png" width="500px">
-</div>
-
-We further include Overcooked games with multiple recipes, in which agents should decide the schedule of cooking different recipe for higher rewards.
-
-<div align=center>
-<img src="assets/overcooked_new.png" width="500px">
-</div>
+- **habitat-llm**
+    - **Agent**   : Represents the robot or human. An agent can act in the environment.
+    - **Tools**   : Represents abstractions which enable the agent to perceive or act in the environment.
+    - **Planner** : Represents centralized and decentralized planners.
+    - **LLM**     : Contains abstractions to represent Llama and GPT APIs.
+    - **WorldGraph** : Contains a hierarchical world graph representing rooms, furniture, objects.
+    - **Perception** : Contains a simulated perception pipeline which sends local detections to the world model.
+    - **Examples**: Contains demos and evaluation programs to show or analyze the performance of planners.
+    - **EvaluationRunner**: Represents an abstraction for running the planners.
+    - **Conf**    : Contains hydra config files for all classes.
+    - **Utils**   : Contains various utility methods required throughout the codebase.
+    - **Tests**   : Contains unit tests.
+- **scripts**
+    - **hitl_analysis** : Contains scripts to analyze and replay human-in-the-loop traces.
+    - **prediviz** : Contains visualization and annotation tools for PARTNR tasks.
 
 
-### ⚽️ Google Research Football
+## Information Flow
 
-[Google Research Football (GRF)](https://github.com/google-research/football) is a simulation environment for reinforcement learning based on the popular football video game.
-We choose the Football *Academy 3 vs. 1 with Keeper* scenario and implement it as a ZSC challenge.
+Below is a figure showing the flow of information through decentralized planners in PARTNR. Please note that there is no explicit communication between the two decentralized planners. The [EnvironmentInterface](./habitat_llm/agent/env/environment_interface.py) reads observations for each agent and sends them to the [Perception Module](./habitat_llm/perception/perception_sim.py). The processed observations are used to update the [World Graph](./habitat_llm/world_model/world_graph.py) and the [Planner](./habitat_llm/planner/planner.py) (based on an LLM or other system) uses the world graph and the task description to select a [Tool](./habitat_llm/tools/tool.py) to interact with the environment.
 
-<div align=center>
-<img src="assets/grf.png" width="500px">
-</div>
+<p align="center">
+  <img src="docs/planner_v3.png" width="65%"/>
+</p>
 
+## Installation
 
-## 📖 Installation
+For installation, refer to [INSTALLATION.md](INSTALLATION.md)
 
-To install requirements:
+## Quickstart
 
-**ZSC-Eval and Overcooked**
-```shell
-conda env create -f environment.yml
+Baselines for a variety of agent configuration are runnable with the provided configurations. Select any of the baselines from [habitat_llm/conf/baselines](./habitat_llm/conf/baselines/). You may need to specify one or two LLMs based on the baseline. Set the inference mode to `hf` and specify the huggingface model to use for inference. Model weights will be downloaded automatically if they are not found. Below are examples using Llama-3.1-8B running on the `val_mini` data split. Replace `val_mini` with one of `[train_2k, val, train, val_mini]` to run other splits. If you are using local custom path to the weights of the LLM instead of only the huggingface ID for llama 3 models, make sure the string "Llama-3" appears in the path to the weights. The grammar constraining code looks for this string in the path to determine how to load the tokenizer.
+
+### Decentralized Multi Agent React Summary
+```bash
+python -m habitat_llm.examples.planner_demo --config-name baselines/decentralized_zero_shot_react_summary.yaml \
+    habitat.dataset.data_path="data/datasets/partnr_episodes/v0_0/val_mini.json.gz" \
+    evaluation.agents.agent_0.planner.plan_config.llm.inference_mode=hf \
+    evaluation.agents.agent_1.planner.plan_config.llm.inference_mode=hf \
+    evaluation.agents.agent_0.planner.plan_config.llm.generation_params.engine=meta-llama/Meta-Llama-3-8B-Instruct \
+    evaluation.agents.agent_1.planner.plan_config.llm.generation_params.engine=meta-llama/Meta-Llama-3-8B-Instruct
 ```
 
-**Google Research Football**
-```shell
-./install_grf.sh
+### Centralized Multi Agent React Summary
+```bash
+python -m habitat_llm.examples.planner_demo --config-name baselines/centralized_zero_shot_react_summary.yaml \
+    habitat.dataset.data_path="data/datasets/partnr_episodes/v0_0/val_mini.json.gz" \
+    evaluation.planner.plan_config.llm.inference_mode=hf \
+    evaluation.planner.plan_config.llm.generation_params.engine=meta-llama/Meta-Llama-3-8B-Instruct
 ```
 
-## 📝 How to use ZSC-Eval for Evaluating ZSC Algorithms
-
-After installation, here is the steps to use ZSC-Eval for evaluating the ZSC algorithms. We use the Overcooked Environment as an example.
-
-```shell
-cd AHT_human_intervention/scripts/overcooked
+### Single Agent React Summary
+```bash
+python -m habitat_llm.examples.planner_demo --config-name baselines/single_agent_zero_shot_react_summary.yaml \
+    habitat.dataset.data_path="data/datasets/partnr_episodes/v0_0/val_mini.json.gz" \
+    evaluation.agents.agent_0.planner.plan_config.llm.inference_mode=hf \
+    evaluation.agents.agent_0.planner.plan_config.llm.generation_params.engine=meta-llama/Meta-Llama-3-8B-Instruct
 ```
 
-### Setup the Policy Config
+### Heuristic Planner
+```bash
+python -m habitat_llm.examples.planner_demo --config-name baselines/heuristic_full_obs.yaml \
+    habitat.dataset.data_path="data/datasets/partnr_episodes/v0_0/val_mini.json.gz"
+```
+### Custom Instructions
 
-gen policy_config for each layout
-```shell
-bash shell/store_config.sh {layout}
-#! modify the layout names
-bash shell/mv_policy_config.sh
+In addition to the PARTNR splits you can run custom instructions as well. Below is an example running a custom instruction using single agent react.
+
+```bash
+python -m habitat_llm.examples.planner_demo --config-name baselines/single_agent_zero_shot_react_summary.yaml \
+    instruction="<CUSTOM_INSTRUCTION>" \
+    mode='cli' \
+    evaluation.agents.agent_0.planner.plan_config.llm.inference_mode=hf \
+    evaluation.agents.agent_0.planner.plan_config.llm.generation_params.engine=meta-llama/Meta-Llama-3-8B-Instruct
 ```
 
-**An Example of policy_config**
-
-[Policy Config Example](assets/policy_config.example)
-
-### Prepare the Evaluation Partners
-
-1. train behavior-preferring agents
-```shell
-bash shell/train_bias_agents.sh {layout}
+### OpenAI Backend
+To run with openai chat as the LLM backend instead set the `plan_config.llm=openai_chat`. Make sure your API keys have been set appropriately.
+```bash
+python -m habitat_llm.examples.planner_demo --config-name baselines/single_agent_zero_shot_react_summary.yaml \
+    habitat.dataset.data_path="data/datasets/partnr_episodes/v0_0/val_mini.json.gz" \
+    llm@evaluation.agents.agent_0.planner.plan_config.llm=openai_chat
 ```
-2. extract agent models
-```shell
-cd ..
-python extract_models/extract_bias_agents_models.py {layout}
-python prep/gen_bias_agent_eval_yml.py {layout}
-cd overcooked
-```
-3. evaluate the agents and get policy behaviors
-```shell
-bash shell/eval_bias_agents_events.sh {layout}
-```
-4. select evaluation partners and generate evaluation ymls
-```shell
-cd ..
-python prep/select_bias_agent_br.py --env overcooked --layout {layout} --k 10 --N 1000000
+Note that constrained generation is not supported for the openai backend.
+
+### Learned Skills
+To run baselines with neural network skills for the robot agent (point nav, pick, and place) append the following argument overrides to the above commands. Please refer to the installation readme to download the skill checkpoints.
+
+```bash
+    device=cpu \
+    agent@evaluation.agents.agent_0.config=nn_rearrange_agent_motortoolsonly \
+    habitat_conf/task=rearrange_easy_multi_agent_nn \
 ```
 
-Copy the results in `AHT_human_intervention/scripts/prep/results/{layout}` to `AHT_human_intervention/utils/bias_agent_vars.py`.
+## Calculating Results
+You can check the progress of the run and the results so far using
+`python scripts/read_results.py <output_dir>/<dataset_name>`. The default `output_dir` is `outputs/habitat_llm/<timestamp>-<dataset_name>`. This can be overridden using the `paths.results_dir` and `evaluation.output_dir` configuration elements. The output directory also contains the full text traces of the rollouts and other statistics.
 
-Generate benchmark yamls:
+## Testing episodes
 
-```shell
-python prep/gen_bias_agent_benchmark_yml.py -l {layout}
+To test whether a dataset is runnable and the success at step 0, run the following command. Set the `habitat.dataset.data_path` to the dataset you want to test.
+
+```bash
+HYDRA_FULL_ERROR=1 python -m habitat_llm.examples.verify_episodes \
+    --config-name examples/planner_multi_agent_demo_config.yaml \
+    hydra.run.dir="." \
+    evaluation=centralized_evaluation_runner_multi_agent \
+    habitat.dataset.data_path="data/datasets/partnr_episodes/v0_0/val_mini.json.gz" \
+    mode='data' \
+    world_model.partial_obs='False' \
+    evaluation.type="centralized" \
+    num_proc=5
 ```
 
-5. train BRs for mid-level biased agents
-```shell
-cd overcooked
-bash shell/train_bias_agents_br.bash {layout}
+#### SkillRunner: Running Oracle Skills in a Sandbox Environment
+
+The habitat_llm/examples/skill_runner.py application provides a headless command line interface (CLI) for running custom sequences of oracle skills within a sandbox environment for a given episode.
+
+For example:
+```bash
+HYDRA_FULL_ERROR=1 python -m habitat_llm.examples.skill_runner hydra.run.dir="." +skill_runner_show_topdown=True habitat.dataset.data_path=data/datasets/partnr_episodes/v0_0/val_mini.json.gz +skill_runner_episode_id="334"
 ```
+In the above example, episode `334` from the `val_mini.json.gz` dataset will be instantiated, the list of all active Entities (Rooms, Objects, Furniture, and Receptacles) will be printed to the console.
 
-### Evaluate the ZSC Agents
+- By providing CLI option `+skill_runner_show_topdown=True`, the program will render and display a top-down view of the scene upon initialization.
 
-We using the most common baseline, FCP, as an example.
+- CLI option `+skill_runner_episode_index=` can be provided instead of `+skill_runner_episode_id=`, in which case the integer index will be used to query the episode from the dataset.
 
-1. evaluate S2 models
-```shell
-#! modify the exp names
-bash shell/eval_with_bias_agents.sh {layout} fcp
+- Note that all environment config values can be overridden from the CLI and defaults are set in `habitat_llm/conf/examples/skill_runner_default_config.yaml`.
+
+Once the Episode is initialized, the user will be presented with a list of available skills (e.g. Navigate, Pick, Place, Open, Close) and prompted to enter a command.
+
+Commands can take the form of a skill call, for example:
+```bash
+Enter Command
+> Navigate 0 table_10
 ```
-2. compute final results
-```shell
-#! modify the exp names
-cd ..
-python eval/extract_results.py -a {algo} -l {layout}
-```
+would command agent 0 to execute the "OracleNavSkill" targeting Entity with name `table_10`. By default, a video of the full skill execution will be produced and displayed after skill completion along with skill output text printed to the console.
 
+- All generated video will be saved to `paths.results_dir`, change this path by adding `paths.results_dir=<relative_path_to_directory>` to the CLI call.
+- Video recording and playback can be disabled by setting `+skill_runner_make_video=false` in the CLI.
 
-## 🏋️ Train ZSC Algorithms
+_NOTE: skill_runner currently supports only sequential skill execution for one agent at a time. For example, you cannot command both agents to simultaneously navigate. Primarily this restriction is motivated by the complexity of synchronizing skills with different execution lengths._
 
-We re-implement FCP, MEP, TrajeDi, HSP, COLE and E3T as the baselines in ZSC-Eval.
-To train these ZSC methods, please follow the guide below:
+Additional non-skill commands include:
+- `debug` - trigger a pdb breakpoint for open-ended debugging and attach a `DebugVisualizer` to local variable `dbv` for visual debugging.
+- `exit` - quit the program.
+- `help` - print the available skill text to the console.
+- `entities` - print the list of available entities to the console.
+- `make_video` - generate, display, and save a concatenation of all sequential skill execution videos.
 
-First, replace `"your wandb name"` with your wandb username for convenience experiments management.
+## Using with ConceptGraphs
 
-### Train FCP
+See detailed doc [here](./habitat_llm/concept_graphs/README.md)
 
-**Stage 1**
+## Finetuning a planning model
 
-1. train self-play agents
-```shell
-cd overcooked
-bash shell/train_sp.sh {layout}
-```
-2. extract models
-```shell
-cd ..
-#! modify the exp names
-python extract_models/extract_sp_models.py {layout} overcooked
-```
-**Stage 2**
-1. generate S2 ymls
-```shell
-#! modify the exp names
-python prep/gen_S2_yml.py {layout} fcp
-```
-2. train S2
-```shell
-cd overcooked
-#! modify the exp names
-bash shell/train_fcp_stage_2.sh {layout} {population_size}
-```
-3. extract S2 models
-```shell
-cd ..
-#! modify the exp names
-python extract_models/extract_S2_models.py {layout} overcooked
-```
+See detailed doc [here](./habitat_llm/finetuning/README.md)
 
-### Train MEP | TrajeDi
+## Extending the environment
 
-**Stage 1**
-
-1. generate Stage 1 population yml
-```shell
-python prep/gen_pop_ymls.py {layout} [mep|traj] -s {population_size}
-```
-2. train S1
-```shell
-cd overcooked
-bash train_[mep|traj]_stage_1.sh {layout} {population_size}
-```
-3. extract S1 models
-```shell
-cd ..
-#! modify the exp names
-python extrace_models/extract_pop_S1_models.py {layout} overcooked
-```
-
-**Stage 2**
-
-1. generate S2 yamls
-```shell
-#! modify the exp names
-python prep/gen_S2_yml.py {layout} [mep|traj]
-```
-2. train S2
-```shell
-cd overcooked
-#! modify the pop names
-bash shell/train_[mep|traj]_stage_2.sh {layout} {population_size}
-```
-3. extract S2 models
-```shell
-cd ..
-#! modify the exp names
-python extract_models/extract_S2_models.py {layout} overcooked
-```
-
-### Train HSP
-1. generate S2 ymls
-```shell
-python prep/gen_hsp_S2_ymls.py -l ${layout} -k {num_bias_agents} -s {mep_stage_1_population_size} -S {population_size}
-```
-2. train S2
-```shell
-cd overcooked
-bash shell/train_hsp_stage_2.sh {layout} {population_size}
-```
-3. extract S2 models
-```shell
-#! modify the exp names
-python extract_models/extract_S2_models.py {layout} overcooked
-```
-
-### Train COLE
-
-1. generate COLE ymls
-
-```shell
-python prep/gen_cole_ymls.py {layout} -s {population_size}
-```
-
-2. train COLE
-```shell
-cd overcooked
-bash shell/train_cole.sh {layout} {population_size}
-```
-
-3. extract S2 models
-```shell
-cd ..
-#! modify the exp names
-python extract_models/extract_S2_models.py {layout} overcooked
-```
-
-### Train E3T
-
-```shell
-cd overcooked
-bash shell/train_e3t.sh {layout}
-```
-
-We use the `random3_m` layout in Overcooked as an example for all generated yamls and models (.pt). The files are in [random3_m](https://huggingface.co/Leoxxxxh/ZSC-Eval-policy_pool/tree/main/random3_m).
-
-## 🤖 Pre-trained Models
-
-We also provide the pre-trained models for these baselines, you can download pre-trained models from [huggingface](https://huggingface.co/Leoxxxxh/ZSC-Eval-policy_pool):
-
-```shell
-cd AHT_human_intervention
-git clone https://huggingface.co/Leoxxxxh/ZSC-Eval-policy_pool policy_pool
-```
-
-## 👩🏻‍💻 Human Study
-
-We implement a human study platform, including game-playing, subjective ranking, and data collection. Details can be found in [AHT_human_intervention/human_exp/README.md](AHT_human_intervention/human_exp/README.md).
-
-### Web UIs
-#### Game-playing
-<div align=center>
-<img src="assets/game_play.png" width="600px">
-</div>
-
-#### Ranking
-<div align=center>
-<img src="assets/ranking.png" width="600px">
-</div>
-
-
-### Deployment
-
-#### Debug Mode
-```shell
-export POLICY_POOL="zsc_eval/policy_pool"; python zsc_eval/human_exp/overcooked-flask/app.py
-```
-#### Production Mode
-```shell
-bash zsc_eval/human_exp/human_exp_up.sh
-```
-
-## 🛠️ Code Structure Overview
-
-`AHT_human_intervention` contains:
-
-`algorithms/`:
-- `population/`: trainers for population-based ZSC algorithms
-- `r_mappo/`: trainers for self-play based algorithms, including SP and E3T
-
-`envs/`:
-- `overcooked/`: overcooked game with single recipe
-- `overcooked_new/`: overcooked game with mutiple recipe
-- `grf/`: google research football game
-
-`runner/`: experiment runers for each environment
-
-`utils/`:
-- `config.py`: basic configuration
-- `overcooked_config.py`: configuration for overcooked experimenets
-- `grf_config.py`: configuration for grf experimenets
-
-`policy_pool/`: training, evaluation yamls and agent models
-
-`human_exp/`: human study platform
-
-`scripts/`
-- `prep/`: generate yamls for training
-    - `select_bias_agent_br.py`: select evaluation partners
-- `extract_models/`: code for extracting trained agent models
-- `render/`: environment rendering
-- `overcooked/`: scripts for training and evaluating overcooked agents
-    - `eval/`: python scripts for evaluation and extraction evaluation results
-        - `results`: benchmark results
-    - `shell/`: shell scripts for training and evaluating agents
-    - `train/`: python training scripts for each algorithm
-- `grf/`: scripts for training and evaluating grf agents
-    - `eval/`: python scripts for evaluation and extraction evaluation results
-        - `results`: benchmark results
-    - `shell/`: shell scripts for training and evaluating agents
-    - `train/`: python training scripts for each algorithm
-
-## ⚒️ How to Extend ZSC-Eval to New Environments
-
-Firstly, the new environments should have consistent interfaces with those in [Gym](https://gymnasium.farama.org/). Then **2 key steps** are required for generating evaluation partners:
-
-- Design events that cover *common behaviors* in the new environment and implement event triggers for recording these events.
-- Implement reward calculation using linear combinations of event records and event weights, and design weights that cover *common preferences* in the new environment.
-
-We use GRF as an example to provide guidelines for including new environments in ZSC-Eval.
-
-The GRF environment is integrated in `AHT_human_intervention/envs/grf/`:
-
-- `grf_env.py`: the environment wrapper to provide consistent interface with Gym.
-- `scenarios/`: ZSC scenarios.
-- **`reward_process.py`**: event-based reward shaping.
-- **`stats_process.py`**: pre-defined events recording.
-- `raw_feature_process.py`: observation processing for GRF, based on https://github.com/jidiai/GRF_MARL .
-- `multiagentenv.py`: abstract interface
-
-**`reward_process.py`** and **`stats_process.py`** are two key modifications to include GRF in ZSC-Eval.
-
-We argue that ZSC focuses on high-level strategies instead of low-level operations, and thus use some common statistical variables as events, including:
-
-```python
-SHAPED_INFOS = [
-    "pass",
-    "actual_pass",
-    "shot",
-    "slide",
-    "catch",
-    "assist",
-    "possession",
-    "score",
-]
-```
-`stats_process.py` implements triggers for each event and records the occurrence of these events, which is used in `reward_process.py`. `reward_process.py` receives user designated weights of the events, and competes the rewards that indicating behavior preferences using linear combinations. An example of a weights set is:
-
-```shell
-w0="[-5:0:1],0,[-5:0:1],0,[-5:0:1],0,0,[1:5]"
-```
-
-`w0` indicates `38` event weight vectors, under the constraints that each weight vector has at most `3` preferred behaviors (`3` non-zero weight), as shown in the following:
-
-```plain
-1: [-5.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-2: [-5.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 5.0]
-3: [-5.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0]
-4: [-5.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 5.0]
-5: [-5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-6: [-5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0]
-7: [-5.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
-8: [-5.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 5.0]
-9: [-5.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-10: [-5.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 5.0]
-11: [0.0, 0.0, -5.0, 0.0, -5.0, 0.0, 0.0, 1.0]
-12: [0.0, 0.0, -5.0, 0.0, -5.0, 0.0, 0.0, 5.0]
-13: [0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-14: [0.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 5.0]
-15: [0.0, 0.0, -5.0, 0.0, 1.0, 0.0, 0.0, 1.0]
-16: [0.0, 0.0, -5.0, 0.0, 1.0, 0.0, 0.0, 5.0]
-17: [0.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0]
-18: [0.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 5.0]
-19: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-20: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0]
-21: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
-22: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 5.0]
-23: [0.0, 0.0, 1.0, 0.0, -5.0, 0.0, 0.0, 1.0]
-24: [0.0, 0.0, 1.0, 0.0, -5.0, 0.0, 0.0, 5.0]
-25: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-26: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 5.0]
-27: [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0]
-28: [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 5.0]
-29: [1.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-30: [1.0, 0.0, -5.0, 0.0, 0.0, 0.0, 0.0, 5.0]
-31: [1.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0]
-32: [1.0, 0.0, 0.0, 0.0, -5.0, 0.0, 0.0, 5.0]
-33: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-34: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0]
-35: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
-36: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 5.0]
-37: [1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-38: [1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 5.0]
-```
-
-The `38` weight vectors cover common preferences of football players in GRF, which is essential in evaluating ZSC capability.
-
-Although the new environments may be complex, the triggers of events are relatively easy to implement and the high-level events and their weights are convenient to design. **We call for suggestions about new multi-agent ZSC environments and are happy to include them in ZSC-Eval**.
-
-
-## Benchmark Results
-
-### Overcooked
-Overall ZSC-Eval benchmark results in Overcooked.
-
-<div align=center>
-<img src="assets/overcooked_results.png" width="600px">
-</div>
-
-Human benchmark results in Overcooked.
-
-<div align=center>
-<img src="assets/human_overcooked_results.png" width="600px">
-</div>
-
-
-### GRF
-Overall ZSC-Eval benchmark results in GRF.
-
-<div align=center>
-<img src="assets/grf_results.png" width="300px">
-</div>
+For additional details about adding new agents, tools and custom actions see [here](./docs/extending.md)
 
 ## Citation
+
+If you use our codebase or dataset in your research, please cite the [PARTNR](https://arxiv.org/pdf/2411.00081) paper:
+
 ```
-@inproceedings{wang2024zsc,
-  title={Zsc-Eval: An Evaluation Toolkit and Benchmark for Multi-agent Zero-shot Coordination},
-  author={Wang*, Xihuai and Zhang*, Shao and Zhang, Wenhao and Dong, Wentao and Chen, Jingxiao and Wen, Ying and Zhang, Weinan},
-  booktitle={The Thirty-eight Conference on Neural Information Processing Systems Datasets and Benchmarks Track},
-  year={2024}
+@inproceedings{PARTNR,
+  author = {Matthew Chang and Gunjan Chhablani and Alexander Clegg and Mikael Dallaire Cote and Ruta Desai and Michal Hlavac and Vladimir Karashchuk and Jacob Krantz and Roozbeh Mottaghi and Priyam Parashar and Siddharth Patki and Ishita Prasad and Xavier Puig and Akshara Rai and Ram Ramrakhya and Daniel Tran and Joanne Truong and John M. Turner and Eric Undersander and Tsung-Yen Yang},
+  title = {PARTNR: A Benchmark for Planning and Reasoning in Embodied Multi-agent Tasks},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  note = {alphabetical author order},
+  year = {2025}
 }
 ```
 
-## Acknowledgements
 
-We implement algorithms heavily based on https://github.com/samjia2000/HSP , and human study platform based on https://github.com/liyang619/COLE-Platform.
+## License
+
+partnr-planner is MIT licensed. See the [LICENSE](LICENSE) for details.
