@@ -1,0 +1,3 @@
+[submodule "AHT_human_intervention/external/partnr-planner"]
+	path = AHT_human_intervention/external/partnr-planner
+	url = https://github.com/facebookresearch/partnr-planner
