@@ -336,13 +336,11 @@ class ProAgentWithIntervention:
             try:
                 self.last_plan = {
                     "steps": plan.steps,  # Direct list of ML_action strings
-                    "confidence": getattr(plan, 'confidence', None)
                 }
                 self.last_plan_category = getattr(plan, 'category', None)
-                self.last_plan_rationale = getattr(plan, 'rationale_public', None)
                 self.last_intervention_reason = getattr(plan, 'intervention_reason', None)
                 self.last_chain_of_thought = getattr(plan, 'chain_of_thought', None)
-                print(f"[INTP] category={self.last_plan_category} conf={self.last_plan.get('confidence')} steps={self.last_plan.get('steps')} rationale={self.last_plan_rationale} intervention_reason={self.last_intervention_reason}")
+                print(f"[INTP] category={self.last_plan_category} steps={self.last_plan.get('steps')} intervention_reason={self.last_intervention_reason}")
                 if self.last_chain_of_thought:
                     print(f"[INTP] CoT: {self.last_chain_of_thought}")
             except Exception:
@@ -354,27 +352,22 @@ class ProAgentWithIntervention:
                     {"t": t,
                      "type": "plan",
                      "steps": list(plan.steps),
-                     "conf": float(getattr(plan, 'confidence', 0.0)),
                      "category": str(getattr(plan, 'category', '')),
-                     "rationale": str(getattr(plan, 'rationale_public', ''))}
+                     "chain_of_thought": str(getattr(plan, 'chain_of_thought', ''))}
                 ])
             except Exception:
                 pass
             
-            # Check for low-level override
+            # Check for low-level override (applies for 1 step, then continues with medium-level plan)
             if hasattr(plan, 'low_level_override') and plan.low_level_override:
                 print(f"🎯 Low-level override detected: {plan.low_level_override}")
                 self.low_level_override = plan.low_level_override
                 self.low_level_override_duration = 1  # Override for 1 step
-                # Keep current ML action unchanged, but store the override
-                if not plan.steps:
-                    raise RuntimeError("Interpreter returned empty plan")
-                ml_action = plan.steps[0]
-            else:
-                # Normal ML action processing
-                if not plan.steps:
-                    raise RuntimeError("Interpreter returned empty plan")
-                ml_action = plan.steps[0]
+                
+            # Process medium-level steps (works with or without low-level override)
+            if not plan.steps:
+                raise RuntimeError("Interpreter returned empty plan")
+            ml_action = plan.steps[0]
             
             print(f"🧠 Interpreter generated plan with {len(plan.steps)} steps")
             print(f"📋 Current ml_action: {ml_action}")

@@ -3,6 +3,7 @@ import os
 import sys
 import argparse
 import pygame
+import time
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 PROAGENT_SRC = os.path.abspath(os.path.join(PROJECT_ROOT, 'proagent', 'src'))
@@ -298,7 +299,6 @@ def main():
                 ml = getattr(p0, 'current_ml_action', None)
                 # Get new interpreter plan info
                 last_plan = getattr(p0, 'last_plan', None)
-                last_plan_confidence = last_plan.get('confidence') if last_plan else None
                 
                 a0_conv = convert_action(a0)
                 a1_conv = convert_action(a1)
@@ -325,6 +325,9 @@ def main():
             joint = (a0_conv, a1_conv)
             state, reward, done, info = env.step(joint)
             step += 1
+            
+            # Brief pause to ensure step is visible
+            time.sleep(1)
 
         # Render
         screen.fill((255, 255, 255))
@@ -347,10 +350,7 @@ def main():
             last_plan = getattr(p0, 'last_plan', None)  
             last_intervention_reason = getattr(p0, 'last_intervention_reason', None)
             last_chain_of_thought = getattr(p0, 'last_chain_of_thought', None)
-            last_plan_confidence = last_plan.get('confidence') if last_plan else None
             
-            if last_plan_confidence is not None:
-                info_lines.append(f'Confidence: {last_plan_confidence:.2f}')
             if last_plan and last_plan.get('steps'):
                 steps_str = ', '.join(last_plan.get('steps', [])[:3])  # Show first 3 steps
                 if len(last_plan.get('steps', [])) > 3:
@@ -369,32 +369,6 @@ def main():
             if current_ml:
                 info_lines.append(f'Current ML Action: {current_ml}')
                 
-            # Show agent stats
-            stats = p0.get_intervention_stats()
-            info_lines.append(f'Memory Entries: {stats.get("memory_entries", 0)}')
-            info_lines.append(f'History Length: {stats.get("history_length", 0)}')
-            # Show last few episodic memory events
-            try:
-                mem_events = list(getattr(p0.memory, 'episodic', []))[-4:]
-                for ev in mem_events:
-                    if ev.get('type') == 'human_intervention':
-                        info_lines.append(('MEM', f"t{ev.get('t')}: human[{(ev.get('text') or '')[:60]}]"))
-                    elif ev.get('type') == 'plan':
-                        steps = ev.get('steps', [])
-                        info_lines.append(('MEM', f"t{ev.get('t')}: plan[{', '.join(steps[:3])}{'...' if len(steps)>3 else ''}] conf={ev.get('conf'):.2f}"))
-                    else:
-                        info_lines.append(('MEM', f"t{ev.get('t')}: {ev.get('type')}"))
-                
-                # Show recent human interventions specifically
-                all_events = list(getattr(p0.memory, 'episodic', []))
-                human_interventions = [ev for ev in all_events if ev.get('type') == 'human_intervention']
-                if human_interventions:
-                    recent_interventions = human_interventions[-2:]  # Show last 2 interventions
-                    for i, interv in enumerate(recent_interventions):
-                        label = 'Last intervention' if i == 0 else 'Prev intervention'
-                        info_lines.append(('INTERVENTION', f"{label}: {interv.get('text', '')[:80]}"))
-            except Exception:
-                pass
             
             # Show teammate model from memory module (LLM-authored)
             try:
@@ -443,7 +417,7 @@ def main():
                     wrapped_lines.extend(wrap_two_lines('Intervention Reason: ', content, font, text_panel_width))
                     continue
                 if tag == 'CHAIN_OF_THOUGHT':
-                    wrapped_lines.extend(wrap_multiline_text('Chain of Thought: ', content, font, text_panel_width, max_lines=6))
+                    wrapped_lines.extend(wrap_multiline_text('Chain of Thought: ', content, font, text_panel_width, max_lines=15))
                     continue
                 if tag == 'INTERVENTION':   
                     wrapped_lines.extend(wrap_two_lines('Intervention: ', content, font, text_panel_width))
@@ -453,7 +427,7 @@ def main():
                     continue
             wrapped_lines.extend(wrap_text(line if isinstance(line, str) else str(line), font, text_panel_width))
 
-        max_lines = 28
+        max_lines = 35
         start_line = max(0, len(wrapped_lines) - max_lines)
         visible_lines = wrapped_lines[start_line:]
 
@@ -462,7 +436,7 @@ def main():
             screen.blit(txt, (text_panel_x, text_panel_y + i * 22))
 
         pygame.display.flip()
-        clock.tick(1)  # Much slower for debugging
+        clock.tick(1.5)
 
     pygame.quit()
 

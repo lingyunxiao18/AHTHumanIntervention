@@ -42,26 +42,22 @@ Category = Literal["policy", "env", "teammate", "vague"]
 @dataclass
 class Plan:
 	steps: List[str]  # List of ML_action strings instead of MacroStep objects
-	confidence: float
-	rationale_public: str                 # <= 1 sentence, no CoT
+	chain_of_thought: str                # Explicit CoT reasoning with full reasoning process
 	category: Category                    # model's classification of the human msg
 	teammate_behavior: str = ""           # Add this field
 	memory_writes: List[Dict[str, Any]] = field(default_factory=list)
 	low_level_override: Optional[str] = None  # Direct low-level action override (e.g., "move_north", "wait", "interact")
 	intervention_reason: str = ""         # LLM's inference of why human provided this intervention
-	chain_of_thought: str = ""           # Explicit CoT reasoning (≤6 lines)
 
 	def to_dict(self) -> Dict[str, Any]:
 		return {
 			"steps": self.steps,  # Direct list of ML_action strings
-			"confidence": self.confidence,
-			"rationale_public": self.rationale_public,
+			"chain_of_thought": self.chain_of_thought,
 			"category": self.category,
 			"teammate_behavior": self.teammate_behavior,  # Include it
 			"memory_writes": self.memory_writes,
 			"low_level_override": self.low_level_override,
 			"intervention_reason": self.intervention_reason,
-			"chain_of_thought": self.chain_of_thought,
 		}
 
 class AgentMemory:
@@ -306,6 +302,7 @@ class HumanMessage:
 def _extract_first_json_object(text: str) -> Tuple[dict | None, str | None]:
     """
     Fallback extractor in case model returns extra text.
+    Handles truncated JSON by finding balanced braces and attempting repair.
     """
     import re
     if not text:
@@ -315,15 +312,28 @@ def _extract_first_json_object(text: str) -> Tuple[dict | None, str | None]:
     except Exception:
         pass
     # Try fenced JSON
-    m = re.search(r"```(?:json)?\s*({.*?})\s*```", text, flags=re.DOTALL)
+    m = re.search(r"```(?:json)?\s*({.*})\s*```", text, flags=re.DOTALL)
     if m:
         try:
             return json.loads(m.group(1)), None
         except Exception as e:
             return None, f"JSON decode error: {e}"
-    # Fallback: find first {...} block
+    # Fallback: find first {...} block accounting for string boundaries
     start, depth = None, 0
+    in_string = False
+    escape_next = False
     for i, ch in enumerate(text):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
         if ch == "{":
             if depth == 0:
                 start = i
@@ -334,8 +344,10 @@ def _extract_first_json_object(text: str) -> Tuple[dict | None, str | None]:
                 block = text[start:i+1]
                 try:
                     return json.loads(block), None
-                except Exception as e:
-                    return None, f"JSON decode error: {e}"
+                except json.JSONDecodeError:
+                    # The block might be incomplete due to truncation
+                    # If it ends inside a string, we can't safely repair it
+                    pass
     return None, "No JSON object found."
 
 
@@ -363,7 +375,7 @@ class LLMClient:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1,
-                max_tokens=512,
+                max_tokens=2048,
             )
 
             # Standard chat completions API
@@ -379,11 +391,25 @@ class LLMClient:
             # Attempt to parse cleanly
             try:
                 obj = json.loads(text_out)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
                 # Extract first JSON block if model returned explanation text
                 obj, err = _extract_first_json_object(text_out)
                 if obj is None:
-                    raise ValueError(f"Could not parse JSON: {err}\nRaw: {text_out}")
+                    # Last resort: try to detect if response was truncated
+                    # and construct a minimal valid response
+                    if "Unterminated string" in str(e) or "No JSON object found" in str(err):
+                        print(f"[LLM-WARNING] Response appears truncated, using fallback")
+                        obj = {
+                            "steps": ["wait(1)"],
+                            "chain_of_thought": "Response was truncated, using safe fallback",
+                            "category": "vague",
+                            "teammate_behavior": "",
+                            "memory_writes": [],
+                            "low_level_override": None,
+                            "intervention_reason": ""
+                        }
+                    else:
+                        raise ValueError(f"Could not parse JSON: {err}\nRaw: {text_out}")
             
             # Debug: log the raw LLM response
             print(f"[LLM-DEBUG] Raw LLM response: {obj}")
@@ -399,9 +425,8 @@ class LLMClient:
                         obj["low_level_override"] = leaked[0]
                     # Replace steps with a valid placeholder ML action to satisfy schema
                     obj["steps"] = ["wait(1)"]
-                    # Strengthen confidence for direct overrides if not provided
-                    obj.setdefault("confidence", 1.0)
-                    obj.setdefault("rationale_public", f"Direct low-level command: {obj['low_level_override']}")
+                    # Add chain of thought for direct overrides if not provided
+                    obj.setdefault("chain_of_thought", f"Direct low-level command: {obj['low_level_override']}")
             except Exception:
                 pass
             
@@ -413,8 +438,7 @@ class LLMClient:
                 print(f"[LLM-DEBUG] Problematic object: {obj}")
                 # Minimal repair for required fields
                 obj.setdefault("steps", ["wait(1)"])
-                obj.setdefault("confidence", 0.5)
-                obj.setdefault("rationale_public", "")
+                obj.setdefault("chain_of_thought", "Emergency repair: executing default wait action")
                 
                 # Fix category field - ensure it's always a valid enum value
                 category = obj.get("category", "vague")
@@ -438,7 +462,7 @@ PLAN_JSON_SCHEMA: Dict[str, Any] = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "additionalProperties": False,
-    "required": ["steps", "confidence", "rationale_public", "category", "teammate_behavior"],
+    "required": ["steps", "chain_of_thought", "category", "teammate_behavior"],
     "properties": {
         "steps": {
             "type": "array",
@@ -448,11 +472,9 @@ PLAN_JSON_SCHEMA: Dict[str, Any] = {
                 "enum": ALL_VALID_ML_ACTIONS
             }
         },
-        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "rationale_public": {"type": "string", "maxLength": 180},
+        "chain_of_thought": {"type": "string", "maxLength": 500},
         "category": {"type": "string", "enum": ["policy", "env", "teammate", "vague"]},
         "teammate_behavior": {"type": "string", "maxLength": 220},
-        "chain_of_thought": {"type": "string", "maxLength": 500},
         "memory_writes": {
             "type": "array",
             "items": {"type": "object"},
@@ -483,7 +505,7 @@ def _load_system_rules() -> str:
 		return (
 			"You control Player0 in Overcooked-AI. Goal: deliver soups quickly and safely.\n"
 			"Use ONLY these ML actions: " + ", ".join(ALL_VALID_ML_ACTIONS) + "\n"
-			"Return JSON with steps, confidence, rationale_public, category, teammate_behavior, and memory_writes."
+			"Return JSON with steps, chain_of_thought, category, teammate_behavior, and memory_writes."
 		)
 
 SYSTEM_RULES = _load_system_rules()
@@ -648,16 +670,17 @@ class AdvancedLLMInterpreter:
 		if not category or category.strip() == "":
 			category = "vague"
 		
+		chain_of_thought_raw = str(raw.get("chain_of_thought", ""))
+		chain_of_thought = chain_of_thought_raw[:500] if chain_of_thought_raw else "No chain of thought provided"
+		
 		plan = Plan(
 			steps=validated_steps,
-			confidence=float(raw.get("confidence", 0.5)),
-			rationale_public=str(raw.get("rationale_public", ""))[:180],
+			chain_of_thought=chain_of_thought,
 			category=category,
 			teammate_behavior=str(raw.get("teammate_behavior", ""))[:220],
 			memory_writes=raw.get("memory_writes", []),
 			low_level_override=raw.get("low_level_override"),
 			intervention_reason=str(raw.get("intervention_reason", ""))[:300],
-			chain_of_thought=str(raw.get("chain_of_thought", ""))[:500],
 		)
 
 		# Plan hygiene checks
@@ -666,9 +689,6 @@ class AdvancedLLMInterpreter:
 			plan.steps = plan.steps[:3]
 		if not plan.steps:
 			plan.steps = ["wait(1)"]
-
-		# Clamp confidence to [0,1]
-		plan.confidence = max(0.0, min(1.0, plan.confidence))
 
 		# NEW: ingest LLM-authored teammate behavior (if present)
 		tb = (raw.get("teammate_behavior") or "").strip()
@@ -691,13 +711,13 @@ class AdvancedLLMInterpreter:
 		# Only write plan event if there's no human intervention (human_intervention type is written by apply_human_intervention)
 		if not human_msg.text.strip():
 			self.memory.write_events([
-				{"t": human_msg.t, "type": "plan", "steps": plan.steps, "conf": plan.confidence}
+				{"t": human_msg.t, "type": "plan", "steps": plan.steps}
 			])
 		else:
 			# For human interventions, update the intervention with corrected action and record plan
 			self.update_intervention_with_corrected_action(plan.steps[0] if plan.steps else "none")
 			self.memory.write_events([
-				{"t": human_msg.t, "type": "plan", "steps": plan.steps, "conf": plan.confidence, "category": plan.category}
+				{"t": human_msg.t, "type": "plan", "steps": plan.steps, "category": plan.category}
 			])
 			
 			# Store intervention pattern for learning

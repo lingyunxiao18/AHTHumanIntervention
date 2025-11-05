@@ -102,3 +102,4 @@ checkpoints/
 !setup.py
 !README.md
 !*.md
+!**/advanced_llm_system_rules.txt

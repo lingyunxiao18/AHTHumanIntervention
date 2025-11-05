@@ -5,7 +5,7 @@ import numpy as np
 import openai
 
 
-from overcooked_ai_py.mdp.actions import Action, Direction
+from shared.envs.envs.overcooked.overcooked_ai_py.mdp.actions import Action, Direction
 import numpy as np 
 
 
