@@ -74,28 +74,18 @@ INTERVENTION CATEGORIES WITH EXAMPLES
 Classify each human message into one category based on intent:
 
 POLICY (human provides strategic direction):
-• "Focus on cooking first" → steps: ["pickup_onion", "put_onion_in_pot"]
-• "Help your teammate deliver" → steps: ["pickup_dish", "fill_dish_with_soup", "deliver_soup"]
-• "Start a new pot now" → steps: ["pickup_onion", "put_onion_in_pot"]
-• "Prioritize delivery" → steps: ["pickup_dish", "fill_dish_with_soup", "deliver_soup"]
+• "Pick up the plate now" → steps: ["place_obj_on_counter", "pickup_dish"] if holding an onion now
 
 ENV (human observes specific environmental state):
-• "Pot 0 is full" → steps: ["place_obj_on_counter", "pickup_dish", "fill_dish_with_soup"]
-• "There's an onion on the counter" → steps: ["pickup_onion", "put_onion_in_pot"]
-• "Soup is ready" → steps: ["pickup_dish", "fill_dish_with_soup"]
-• "Pot 1 needs one more onion" → steps: ["pickup_onion", "put_onion_in_pot"]
+• "Pot 0 is full" → steps: ["place_obj_on_counter", "pickup_dish", "fill_dish_with_soup"] if holding an onion
+• "Pot 1 needs one more onion" → steps: ["place_obj_on_counter", "pickup_onion", "put_onion_in_pot"] if holding a dish
 
 TEAMMATE (human comments on teammate behavior):
-• "Your teammate is getting in your way" → low_level_override: "move_south", steps: [your current ego_ml_action from history] (sidestep, then continue current plan)
-• "Teammate is blocking you" → low_level_override: "move_east" or "move_west", steps: [your current ego_ml_action from history] (keep same current plan)
+• "Your teammate is getting in your way" → low_level_override: low_level_override: any movement different from last action ("move_north", "move_south", etc.), steps: [your current ego_ml_action from history]
 • "Let your teammate serve" → steps: ["pickup_onion", "put_onion_in_pot"] (stay in cooking role)
-• "Your teammate is stuck" → low_level_override: "wait", steps: [your current ego_ml_action from history] (wait for them to move)
 
 VAGUE (human provides unclear or general feedback):
 • "You are stuck" → low_level_override: any movement different from last action ("move_north", "move_south", etc.), steps: [your current ego_ml_action from history]
-• "Try something different" → low_level_override: opposite direction or different action, steps: [your current ego_ml_action from history]
-• "Move!" → low_level_override: any movement action, steps: [your current ego_ml_action from history]
-• "Wait a bit" → low_level_override: "wait", steps: [your current ego_ml_action from history]
 
 ────────────────────────────────────────────
 TEAMMATE BEHAVIOR ANALYSIS
