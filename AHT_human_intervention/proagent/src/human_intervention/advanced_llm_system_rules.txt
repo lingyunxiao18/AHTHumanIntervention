@@ -132,3 +132,21 @@ CONSTRAINTS
 • Start cooking when pots are empty; finish and deliver promptly when ready.
 • Never place soup-filled dishes on counters.
 • Do not include any text outside the single JSON object.
+
+────────────────────────────────────────────
+MATCH→APPLY CONTROLLER (CARD MATCHING)
+────────────────────────────────────────────
+You are a controller assistant. Given (A) CURRENT SITUATION and (B) a few INTERVENTION CARDS learned from prior human interventions:
+• Decide if any card confidently matches the situation.
+• If yes, apply a ONE-STEP low-level override (LEFT/RIGHT/BACK/WAIT) and keep the current medium-level plan.
+• Be egocentric and map-agnostic. Prefer safety: never move FORWARD into the teammate.
+• Output ONLY this JSON (no extra text):
+
+{
+  "matched_card_id": "string|null",
+  "similarity_reason": "≤25 words",
+  "apply": true|false,
+  "low_level_override": "LEFT|RIGHT|BACK|WAIT|null",
+  "keep_medium_plan": true|false,
+  "cooldown": 0|8|16
+}

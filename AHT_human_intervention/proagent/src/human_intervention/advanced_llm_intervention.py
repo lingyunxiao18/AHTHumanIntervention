@@ -104,6 +104,8 @@ class AgentMemory:
 			"open_questions": [],
 			# Learned intervention patterns to avoid future human corrections
 			"intervention_patterns": [],
+			# Learned human intervention cards (LLM Match→Apply)
+			"playbook_cards": [],   # list[dict] of short, egocentric cards (see make_card_from_success)
 		}
 		self.episodic: List[Dict[str, Any]] = []
 		self._cap = episodic_cap
@@ -292,6 +294,22 @@ class AgentMemory:
 			"summary": self.summarize_recent(),
 		}
 
+	def add_intervention_card(self, card: Dict[str, Any]) -> None:
+		cards = self.semantic.setdefault("playbook_cards", [])
+		cards.append(card)
+
+	def topk_cards(self, query_tokens: List[str], k: int = 5) -> List[Dict[str, Any]]:
+		"""Very simple lexical prefilter for candidate cards (keeps code tiny)."""
+		cards = self.semantic.get("playbook_cards", [])
+		scored = []
+		qset = {t.lower() for t in query_tokens}
+		for c in cards:
+			text = (c.get("title","") + " " + c.get("when_text","")).lower()
+			score = sum(1 for t in qset if t in text)
+			scored.append((score, c))
+		scored.sort(key=lambda x: x[0], reverse=True)
+		return [c for s, c in scored[:k] if s > 0]
+
 @dataclass
 class HumanMessage:
 	t: int
@@ -450,13 +468,37 @@ class LLMClient:
                 obj.setdefault("low_level_override", None)
                 obj.setdefault("intervention_reason", "")
                 
+                # Accept brief_rationale in place of chain_of_thought (keeps old code compatible)
+                obj["chain_of_thought"] = obj.get("chain_of_thought") or obj.get("brief_rationale","")
+                
                 # Try validation again - if it still fails, let it raise
                 validate(instance=obj, schema=schema)
+            
+            # Accept brief_rationale in place of chain_of_thought (keeps old code compatible)
+            obj["chain_of_thought"] = obj.get("chain_of_thought") or obj.get("brief_rationale","")
             
             return obj
 
         except Exception as e:
             raise RuntimeError(f"LLMClient.respond_json failed: {e}")
+
+    def match_apply(self, system: str, user: str) -> Dict[str, Any]:
+        """Run the Match→Apply card matching prompt and return parsed JSON."""
+        # Load system rules and extract the Match→Apply section
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        rules_file = os.path.join(script_dir, "advanced_llm_system_rules.txt")
+        try:
+            with open(rules_file, 'r', encoding='utf-8') as f:
+                full_rules = f.read()
+            # Extract Match→Apply section (everything after the header)
+            match_section_start = full_rules.find("MATCH→APPLY CONTROLLER (CARD MATCHING)")
+            if match_section_start >= 0:
+                system_text = full_rules[match_section_start:]
+            else:
+                system_text = system  # Fallback to provided system text
+        except Exception:
+            system_text = system  # Fallback to provided system text
+        return self.respond_json(schema=MATCH_APPLY_JSON_SCHEMA, system=system_text, user={"text": user})
 
 PLAN_JSON_SCHEMA: Dict[str, Any] = {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -491,6 +533,20 @@ PLAN_JSON_SCHEMA: Dict[str, Any] = {
             "default": ""
         }
     }
+}
+
+MATCH_APPLY_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "matched_card_id": {"type": ["string","null"]},
+        "similarity_reason": {"type": "string"},
+        "apply": {"type": "boolean"},
+        "low_level_override": {"type": ["string","null"], "enum": ["LEFT","RIGHT","BACK","WAIT", None]},
+        "keep_medium_plan": {"type": "boolean"},
+        "cooldown": {"type": "integer", "minimum": 0}
+    },
+    "required": ["apply","keep_medium_plan","cooldown"],
+    "additionalProperties": True
 }
 
 def _load_system_rules() -> str:

@@ -81,6 +81,51 @@ LOW_LEVEL_OVERRIDE_TO_ACTION = {
 }
 
 
+def make_card_from_success(ctx: Dict[str, Any], chosen_action: str, human_text: str = "") -> Dict[str, Any]:
+    """
+    Create an intervention card from a successful human fix.
+    Uses the actual human words to make keyword matching work.
+    """
+    # Extract keywords from human text for better matching
+    human_words = human_text.lower() if human_text else ""
+    
+    # Create a title from human text, or use a generic one
+    if human_words:
+        # Extract key phrases: "stuck", "unstuck", "blocked", "same tile", etc.
+        if "stuck" in human_words or "unstuck" in human_words:
+            title = f"Getting unstuck: {human_text[:40]}"
+        elif "teammate" in human_words and ("same" in human_words or "tile" in human_words):
+            title = f"Teammate collision: {human_text[:40]}"
+        elif "move" in human_words or "step" in human_words:
+            title = f"Movement fix: {human_text[:40]}"
+        else:
+            title = f"Intervention: {human_text[:40]}"
+    else:
+        title = "Head-on deadlock: yield once"
+    
+    # Create when_text that includes human's actual words
+    if human_text:
+        when_text = f"Human said: '{human_text}'. Agent stuck or blocked; no progress for ≥2 ticks."
+    else:
+        when_text = "Both agents contend for same tile or try to swap; no progress for ≥2 ticks."
+    
+    return {
+        "id": f"card_{int(ctx.get('tick',0))}",
+        "title": title,
+        "when_text": when_text,
+        "human_text": human_text,  # Store original for reference
+        "local_clues": [
+            "teammate directly ahead or on contested tile",
+            "corridor 1-wide or laterals blocked",
+            "distance to subgoal unchanged ≥2 ticks"
+        ],
+        "action_text": f"Take ONE egocentric step ({chosen_action}), then continue plan.",
+        "safety": ["never FORWARD into teammate", "cooldown 8 ticks"],
+        "enabled_by_human": True,
+        "example_trace": ctx.get("mini_trace",""),
+    }
+
+
 class ProAgentWithIntervention:
     """
     Self-contained ProAgent that uses AdvancedLLMInterpreter as the planner.
@@ -149,6 +194,14 @@ class ProAgentWithIntervention:
         self._human_inbox: List[str] = []
         self._recent_history: List[Dict[str, Any]] = []
         self._intervention_history: List[str] = []
+
+        # Stall tracking for Match→Apply
+        self._stall_ticks = 0
+        self._prev_subgoal_distance = None
+        self._cooldowns = {}
+        self._last_human_intervention_tick = None
+        self._last_human_intervention_action = None
+        self._last_human_intervention_text = None
 
         # Debug: keep last interpreter outputs
         self.last_plan: Optional[Dict[str, Any]] = None
@@ -363,6 +416,11 @@ class ProAgentWithIntervention:
                 print(f"🎯 Low-level override detected: {plan.low_level_override}")
                 self.low_level_override = plan.low_level_override
                 self.low_level_override_duration = 1  # Override for 1 step
+                # Track human intervention for card learning
+                if hm.text.strip():
+                    self._last_human_intervention_tick = getattr(state, 'timestep', 0)
+                    self._last_human_intervention_action = plan.low_level_override
+                    self._last_human_intervention_text = hm.text.strip()
                 
             # Process medium-level steps (works with or without low-level override)
             if not plan.steps:
@@ -712,6 +770,173 @@ class ProAgentWithIntervention:
             
         return (new_pos, new_orientation)
     
+    # ==================== STALL TRACKING FOR MATCH→APPLY ====================
+    
+    def stalled_ticks(self) -> int:
+        return getattr(self, "_stall_ticks", 0)
+
+    def update_stall_counter(self, d_prev: int, d_now: int) -> None:
+        """Update stall counter based on distance to subgoal. Also check position-based stall."""
+        # Check if distance is not decreasing (stuck making progress)
+        if d_now >= d_prev:
+            self._stall_ticks = (getattr(self, "_stall_ticks", 0) + 1)
+        else:
+            # Distance decreased - progress made!
+            self._stall_ticks = 0
+            # Reset cooldown when progress is made (distance decreased)
+            if hasattr(self, '_cooldowns'):
+                self._cooldowns["cards"] = 0
+
+    def is_headon_conflict(self) -> bool:
+        try:
+            if self.prev_state is None:
+                return False
+            a0 = tuple(self.prev_state.players[self.agent_index].position)
+            b0 = tuple(self.prev_state.players[1 - self.agent_index].position)
+            # Best-effort next intents if you already compute them; else approximate via facing
+            a1 = a0  # fallback if not available
+            b1 = b0
+            return (a1 == b1) or (a1 == b0 and b1 == a0)
+        except Exception:
+            return False
+
+    def local_corridor_width(self) -> int:
+        # Simple local lateral-free count (0/1/2), safe fallback if mdp API differs
+        try:
+            if self.prev_state is None:
+                return 0
+            ego = self.prev_state.players[self.agent_index]
+            x, y = ego.position
+            laterals = [(x+1,y),(x-1,y)]
+            free = 0
+            for u,v in laterals:
+                try:
+                    if self.mdp.get_terrain_type_at_pos((u,v)) == ' ':
+                        free += 1
+                except Exception:
+                    pass
+            return free
+        except Exception:
+            return 0
+
+    def free_dirs_egocentric(self) -> Dict[str,bool]:
+        # Minimal: LEFT/RIGHT/BACK/FORWARD relative to last facing (fallback = grid neighbors)
+        # Implemented conservatively to avoid FORWARD into teammate
+        res = {"LEFT": True, "RIGHT": True, "BACK": True, "FORWARD": False}
+        try:
+            if self.prev_state is None:
+                return res
+            player = self.prev_state.players[self.agent_index]
+            # Use mdp.get_valid_actions if present; mark walls/counters as blocked
+            valid = set(self.mdp.get_valid_actions(player))
+            # Map to egocentric is domain-specific; keep conservative defaults
+            res["FORWARD"] = (Action.INTERACT not in valid) and (Direction.NORTH in valid or Direction.SOUTH in valid or Direction.EAST in valid or Direction.WEST in valid)
+        except Exception:
+            pass
+        return res
+
+    def situation_summary(self) -> str:
+        free = self.free_dirs_egocentric()
+        parts = [
+            f"- stalled_ticks = {self.stalled_ticks()}",
+            f"- headon_conflict = {int(self.is_headon_conflict())}",
+            f"- corridor_width_local = {self.local_corridor_width()}",
+            f"- holding = {getattr(self, 'holding_item', 'unknown')}",
+            f"- last_move = {getattr(self, 'last_move', 'unknown')}",
+            f"- free_moves = " + ",".join([d for d,v in free.items() if v]),
+        ]
+        return "SITUATION (egocentric):\n" + "\n".join(parts)
+    
+    def maybe_auto_unstuck(self):
+        # Gate: only when stalled and we have at least one human-enabled card
+        stall_count = self.stalled_ticks()
+        if stall_count < 2:
+            return None
+        
+        cards_all = self.memory.semantic.get("playbook_cards", [])
+        human_enabled = [c for c in cards_all if c.get("enabled_by_human")]
+        print(f"[Match→Apply] Checking: stalled={stall_count}, total_cards={len(cards_all)}, human_enabled={len(human_enabled)}")
+        
+        if not human_enabled:
+            print(f"[Match→Apply] No human-enabled cards found")
+            return None
+
+        # Pick a small set of candidate cards by keywords
+        # Include common human phrases for getting unstuck
+        query = ["stuck","unstuck","deadlock","head-on","swap","yield","teammate","same","tile","blocked","move","step"]
+        cards = self.memory.topk_cards(query, k=5)
+        print(f"[Match→Apply] Query cards with keywords {query}: found {len(cards)} matches")
+        if cards:
+            print(f"[Match→Apply] Matching cards: {[c.get('id') + ': ' + c.get('title', '')[:50] for c in cards]}")
+        if not cards:
+            print(f"[Match→Apply] No cards matched keywords")
+            return None
+
+        # Build prompt pieces
+        situation = self.situation_summary()
+        cards_text = "\n\n".join([
+            f"[{c['id']}] {c['title']}\nWHEN: {c['when_text']}\nACTION: {c['action_text']}\nSAFETY: {', '.join(c.get('safety',[]))}"
+            for c in cards
+        ])
+        user_prompt = f"CURRENT SITUATION:\n{situation}\n\nINTERVENTION CARDS:\n{cards_text}\n\nDecide and fill the JSON."
+
+        # System section name must match what you appended in advanced_llm_system_rules.txt
+        # The match_apply method will automatically load the Match→Apply section from the file
+        system_text = "MATCH→APPLY CONTROLLER (CARD MATCHING)"
+
+        try:
+            print(f"[Match→Apply] Querying LLM with {len(cards)} cards...")
+            result = self.llm_client.match_apply(system=system_text, user=user_prompt)
+            print(f"[Match→Apply] LLM response: apply={result.get('apply') if result else None}, matched_card={result.get('matched_card_id') if result else None}")
+        except Exception as e:
+            print(f"[LLM] Match→Apply exception: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+        if not result or not result.get("apply"):
+            print(f"[Match→Apply] LLM decided not to apply (apply={result.get('apply') if result else None})")
+            return None
+
+        move = result.get("low_level_override")
+        if move not in {"LEFT","RIGHT","BACK","WAIT"}:
+            print(f"[Match→Apply] Invalid move from LLM: {move}")
+            return None  # safety
+        
+        print(f"[Match→Apply] ✅ LLM matched card '{result.get('matched_card_id')}': {result.get('similarity_reason', '')}")
+
+        # Cooldown bookkeeping - only set cooldown if we're applying
+        # The cooldown will be reset if the action actually helps (position changes/distance decreases)
+        self._cooldowns = getattr(self, "_cooldowns", {})
+        cooldown_duration = int(result.get("cooldown", 4))  # Reduced from 8 to 4 ticks
+        self._cooldowns["cards"] = self.current_timestep + cooldown_duration
+        print(f"[Match→Apply] Cooldown set to tick {self._cooldowns['cards']} (duration={cooldown_duration})")
+
+        # IMPORTANT: keep current ML plan (your system contract)
+        return {"low_level_override": move, "steps": [self.current_ml_action]}
+    
+    def _egocentric_to_action(self, ego_dir: str, player) -> Optional[Any]:
+        """Convert egocentric direction (LEFT/RIGHT/BACK/WAIT) to actual action."""
+        if ego_dir == "WAIT":
+            return Action.STAY
+        try:
+            # Get current orientation
+            orientation = player.orientation
+            # Map egocentric to cardinal based on facing
+            if orientation == Direction.NORTH:
+                dir_map = {"LEFT": Direction.WEST, "RIGHT": Direction.EAST, "BACK": Direction.SOUTH}
+            elif orientation == Direction.SOUTH:
+                dir_map = {"LEFT": Direction.EAST, "RIGHT": Direction.WEST, "BACK": Direction.NORTH}
+            elif orientation == Direction.EAST:
+                dir_map = {"LEFT": Direction.NORTH, "RIGHT": Direction.SOUTH, "BACK": Direction.WEST}
+            elif orientation == Direction.WEST:
+                dir_map = {"LEFT": Direction.SOUTH, "RIGHT": Direction.NORTH, "BACK": Direction.EAST}
+            else:
+                return Action.STAY  # fallback
+            return dir_map.get(ego_dir, Action.STAY)
+        except Exception:
+            return Action.STAY
+    
     # ==================== MAIN ACTION METHOD (copied from ProAgent) ====================
     
     def action(self, state):
@@ -746,6 +971,127 @@ class ProAgentWithIntervention:
             if count > 3:
                 self.current_ml_action = "wait(1)"
                 self.time_to_wait = 1
+
+        # Update stall counter once per tick (compute simple distance to subgoal + position check)
+        player = state.players[self.agent_index]
+        try:
+            # Check position-based stall (same position for multiple ticks)
+            current_pos = tuple(player.position)
+            if not hasattr(self, '_position_history'):
+                self._position_history = []
+            self._position_history.append(current_pos)
+            if len(self._position_history) > 3:
+                self._position_history = self._position_history[-3:]
+            
+            # Check if stuck in same position
+            position_stuck = len(self._position_history) >= 2 and len(set(self._position_history[-2:])) == 1
+            
+            motion_goals = self.find_motion_goals(state)
+            if motion_goals:
+                # Simple distance: Manhattan distance to nearest goal
+                min_dist = min(
+                    abs(mg[0][0] - player.position[0]) + abs(mg[0][1] - player.position[1])
+                    for mg in motion_goals
+                )
+            else:
+                min_dist = 0
+            subgoal_dist_now = min_dist
+            subgoal_dist_prev = self._prev_subgoal_distance if self._prev_subgoal_distance is not None else subgoal_dist_now
+            
+            # Update stall counter based on distance
+            self.update_stall_counter(subgoal_dist_prev, subgoal_dist_now)
+            
+            # Also check if position hasn't changed (alternative stall signal)
+            # If position stuck AND distance not improving, ensure stall counter is high enough
+            if position_stuck and subgoal_dist_now >= subgoal_dist_prev and subgoal_dist_now > 0:
+                self._stall_ticks = max(self._stall_ticks, 2)
+            
+            # Reset stall counter if position changed (clear progress signal)
+            if not position_stuck:
+                # Position changed - this is progress, so reduce stall count
+                if self._stall_ticks > 0:
+                    self._stall_ticks = max(0, self._stall_ticks - 1)
+            
+            self._prev_subgoal_distance = subgoal_dist_now
+            stall_count = self.stalled_ticks()
+            if stall_count >= 2:
+                print(f"[Stall] Detected stall: ticks={stall_count}, dist_prev={subgoal_dist_prev:.1f}, dist_now={subgoal_dist_now:.1f}, pos_stuck={position_stuck}, pos={current_pos}")
+        except Exception as e:
+            print(f"[Stall] Error in stall detection: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Write a card when human fix succeeds (progress resumed within 5 ticks)
+        if (self._last_human_intervention_tick is not None and 
+            self._last_human_intervention_action and 
+            self.current_timestep - self._last_human_intervention_tick <= 5 and
+            self.stalled_ticks() == 0):  # Success: no longer stalled
+            ctx = {
+                "tick": self._last_human_intervention_tick,
+                "mini_trace": getattr(self, "recent_trace", ""),
+            }
+            # Convert action to egocentric if needed
+            action_map = {
+                "move_north": "FORWARD", "move_south": "BACK", 
+                "move_east": "RIGHT", "move_west": "LEFT"
+            }
+            ego_action = action_map.get(self._last_human_intervention_action, "BACK")
+            human_text = self._last_human_intervention_text or ""
+            card = make_card_from_success(ctx, chosen_action=ego_action, human_text=human_text)
+            self.memory.add_intervention_card(card)
+            print(f"[Cards] ✅ Learned {card['id']} from human intervention at tick {self._last_human_intervention_tick}")
+            print(f"[Cards]    Title: {card['title']}")
+            print(f"[Cards]    Human said: '{human_text}'")
+            print(f"[Cards]    When: {card['when_text']}")
+            print(f"[Cards]    Action: {card['action_text']}")
+            print(f"[Cards]    Total cards in memory: {len(self.memory.semantic.get('playbook_cards', []))}")
+            # Reset tracking
+            self._last_human_intervention_tick = None
+            self._last_human_intervention_action = None
+            self._last_human_intervention_text = None
+
+        # Try auto "Match→Apply" BEFORE normal low-level controller
+        # ONLY trigger when agent is stalled (stuck/deadlock situation)
+        # Cooldown is only used to prevent spam when making progress
+        reflex = None
+        cooldown_until = self._cooldowns.get("cards", 0)
+        stall_count = self.stalled_ticks()
+        
+        # ONLY try Match→Apply if agent is stalled (stuck/deadlock)
+        if stall_count >= 2:
+            # Agent is stalled - try Match→Apply (cooldown will reset if action helps)
+            if self.current_timestep < cooldown_until:
+                print(f"[Match→Apply] ⚠️ Overriding cooldown (agent stalled: {stall_count} ticks)")
+            print(f"[Match→Apply] Attempting auto-unstuck at tick {self.current_timestep} (cooldown until {cooldown_until}, stalled={stall_count})")
+            reflex = self.maybe_auto_unstuck()
+            if reflex is not None:
+                print(f"[Match→Apply] ✅ Auto-unstuck triggered!")
+            else:
+                print(f"[Match→Apply] ❌ Auto-unstuck returned None")
+        else:
+            # Agent is NOT stalled - skip Match→Apply entirely
+            if self.current_timestep < cooldown_until:
+                print(f"[Match→Apply] ⏸️ Skipping (not stalled: {stall_count}, cooldown until {cooldown_until})")
+            # No log needed if cooldown expired and not stalled - agent is making progress normally
+        
+        if reflex is not None:
+            # Apply the reflex action
+            ego_dir = reflex.get("low_level_override")
+            if ego_dir and ego_dir in {"LEFT","RIGHT","BACK","WAIT"}:
+                chosen_action = self._egocentric_to_action(ego_dir, player)
+                if chosen_action:
+                    print(f"[Match→Apply] Auto-unstuck: {ego_dir} -> {chosen_action}")
+                    # Keep current ML plan as specified
+                    self.current_ml_action = reflex.get("steps", [self.current_ml_action])[0] if reflex.get("steps") else self.current_ml_action
+                    # Skip normal action selection and return immediately
+                    self.prev_state = state
+                    self.current_ml_action_steps += 1
+                    if pkg_resources.get_distribution("overcooked_ai").version == '1.1.0':
+                        self._append_history_tick(state, chosen_action)
+                        return chosen_action, {}
+                    else:
+                        self._append_history_tick(state, chosen_action)
+                        return chosen_action
 
         # Check for low-level override first (before any other logic)
         if self.low_level_override and self.low_level_override_duration > 0:
@@ -948,10 +1294,30 @@ class ProAgentWithIntervention:
         self.teammate_intentions_dict = {}
         self.low_level_override = None
         self.low_level_override_duration = 0
-        self.memory = AgentMemory()
+    
+    def reset(self):
+        """Reset agent state, including interpreter memory."""
+        self.prev_state = None
+        self.current_ml_action = None
+        self.current_ml_action_steps = 0
+        self.time_to_wait = 0
+        self.possible_motion_goals = None
+        self.current_timestep = 0
+        self.teammate_ml_actions_dict = {}
+        self.teammate_intentions_dict = {}
+        self.low_level_override = None
+        self.low_level_override_duration = 0
+        self.memory = AgentMemory(mdp=self.mdp)
         self._human_inbox.clear()
         self._recent_history.clear()
-    
+        # Reset stall tracking
+        self._stall_ticks = 0
+        self._prev_subgoal_distance = None
+        self._cooldowns = {}
+        self._last_human_intervention_tick = None
+        self._last_human_intervention_action = None
+        self._last_human_intervention_text = None
+        self._position_history = []
     def set_agent_index(self, agent_index):
         """Set the agent index."""
         self.agent_index = agent_index
