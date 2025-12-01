@@ -56,7 +56,6 @@ except ImportError:
         PROAGENT_ALLOWED_ML_ACTIONS,
     )
 
-# OpenAI key handling (copied from ProAgent)
 cwd = os.getcwd()
 openai_key_file = os.path.join(cwd, "openai_key.txt")
 
@@ -130,18 +129,22 @@ class ProAgentWithIntervention:
     """
     Self-contained ProAgent that uses AdvancedLLMInterpreter as the planner.
     
-    Features:
-    - AdvancedLLMInterpreter (CoT + Memory) for high-level planning
-    - Exact controller and verificator logic from original ProAgent
-    - Supports human interventions via memory injection
-    - Complete independence from base ProAgent class
+        Features:
+        - AdvancedLLMInterpreter (CoT + Memory) for high-level planning
+        - Controller and verificator logic for medium-level action execution
+        - Supports human interventions via memory injection
+        - Complete independence from base ProAgent class
     """
     
     def __init__(self, mlam, layout, model='gpt-4o-mini', 
                  auto_unstuck=False, controller_mode='new', 
-                 agent_index=None, outdir=None, history_horizon=8, **kwargs):
+                 agent_index=None, history_horizon=8, 
+                 use_baseline=False, **kwargs):
         """
         Initialize ProAgent with AdvancedLLMInterpreter planner.
+        
+        Args:
+            use_baseline: If True, use baseline interpreter (no CoT, no memory)
         """
         self.model = model
         self.mlam = mlam
@@ -150,45 +153,69 @@ class ProAgentWithIntervention:
         self.agent_index = agent_index
         self.auto_unstuck = auto_unstuck
         self.controller_mode = controller_mode
-        self.out_dir = outdir
+        self.use_baseline = use_baseline
         
-        # OpenAI API key handling (copied from ProAgent)
+        # OpenAI API key handling
         self.openai_api_keys = []
         self.load_openai_keys()
         self.key_rotation = True
         
-        # Agent state (copied from ProAgent)
+        # Agent state
         self.prev_state = None
         self.current_ml_action = None
         self.current_ml_action_steps = 0
         self.time_to_wait = 0
-        self.possible_motion_goals = None
         self.pot_id_to_pos = []
         self.current_timestep = 0
-        self.teammate_ml_actions_dict = {}
-        self.teammate_intentions_dict = {}
         
         # Low-level override tracking
         self.low_level_override = None
         self.low_level_override_duration = 0
         
-        # Layout prompt generation (copied from ProAgent)
+        # Layout prompt generation
         self.layout_prompt = self.generate_layout_prompt()
         
-        # Initialize interpreter-based planner with MDP for layout facts
-        self.memory = AgentMemory(mdp=self.mdp)
+        # Initialize interpreter-based planner
         self.history_horizon = history_horizon
         
         # Initialize LLM client and interpreter
         from openai import OpenAI
         # Initialize OpenAI client with API key loaded via openai_key.txt/env
-        self.llm_client = LLMClient(openai_client=OpenAI(api_key=self.openai_api_key()), model='gpt-4.1-mini')
+        self.llm_client = LLMClient(openai_client=OpenAI(api_key=self.openai_api_key()), model=model)
         
-        self.interpreter = AdvancedLLMInterpreter(
-            self.llm_client, 
-            self.memory, 
-            history_horizon=history_horizon
-        )
+        if use_baseline:
+            # Use baseline interpreter (no CoT, no memory)
+            try:
+                from ..human_intervention.advanced_llm_intervention_baseline import (
+                    BaselineLLMInterpreter,
+                    HumanMessage as BaselineHumanMessage
+                )
+            except ImportError:
+                intervention_path = os.path.join(PROJECT_ROOT, 'proagent', 'src', 'human_intervention')
+                if intervention_path not in sys.path:
+                    sys.path.append(intervention_path)
+                from advanced_llm_intervention_baseline import (
+                    BaselineLLMInterpreter,
+                    HumanMessage as BaselineHumanMessage
+                )
+            
+            # Create minimal memory (not used, but kept for compatibility)
+            self.memory = AgentMemory(mdp=self.mdp)
+            self.interpreter = BaselineLLMInterpreter(
+                self.llm_client,
+                memory=None,  # Not used in baseline
+                history_horizon=history_horizon
+            )
+            print(f"🤖 ProAgentWithIntervention initialized with BASELINE interpreter (CoT and memory DISABLED)")
+        else:
+            # Use full interpreter (CoT + Memory)
+            self.memory = AgentMemory(mdp=self.mdp)
+            self.interpreter = AdvancedLLMInterpreter(
+                self.llm_client, 
+                self.memory, 
+                history_horizon=history_horizon
+            )
+            print(f"🤖 ProAgentWithIntervention initialized with interpreter-based planner")
         
         # Human intervention tracking
         self._human_inbox: List[str] = []
@@ -209,10 +236,8 @@ class ProAgentWithIntervention:
         self.last_plan_rationale: Optional[str] = None
         self.last_intervention_reason: Optional[str] = None
         self.last_chain_of_thought: Optional[str] = None
-        
-        print(f"🤖 ProAgentWithIntervention initialized with interpreter-based planner")
     
-    # ==================== OpenAI Key Management (copied from ProAgent) ====================
+    # ==================== OpenAI Key Management ====================
     
     def load_openai_keys(self):
         # 1) Environment variable takes precedence
@@ -245,7 +270,7 @@ class ProAgentWithIntervention:
     def update_openai_key(self):
         self.openai_api_keys.append(self.openai_api_keys.pop(0))
     
-    # ==================== Layout and State Management (copied from ProAgent) ====================
+    # ==================== Layout and State Management ====================
     
     def generate_layout_prompt(self):
         layout_prompt_dict = {
@@ -366,7 +391,7 @@ class ProAgentWithIntervention:
     def generate_ml_action(self, state):
         """
         REPLACED: Use AdvancedLLMInterpreter instead of GPT planner.
-        Generates medium-level actions using CoT reasoning + memory.
+        Generates medium-level actions using CoT reasoning + memory (or baseline without CoT/memory).
         """
         # Use text-based state prompt (same as original ProAgent)
         state_prompt = self.generate_state_prompt(state)
@@ -374,48 +399,65 @@ class ProAgentWithIntervention:
         # Get recent history with teammate actions
         recent_history = self._recent_history[-self.history_horizon:]
         
-        # Get human intervention if available
-        human_text = self._human_inbox.pop(0) if self._human_inbox else ""
+        # Get human intervention if available (baseline mode: always empty)
+        if self.use_baseline:
+            human_text = ""  # No interventions in baseline mode
+        else:
+            human_text = self._human_inbox.pop(0) if self._human_inbox else ""
         
         # Create human message
-        hm = HumanMessage(t=getattr(state, "timestep", 0), text=human_text or "")
-        if hm.text.strip():
-            print(f"[HUMAN] Consuming intervention at t={hm.t}: '{hm.text}'")
+        if self.use_baseline:
+            # Use baseline HumanMessage
+            try:
+                from ..human_intervention.advanced_llm_intervention_baseline import HumanMessage as BaselineHumanMessage
+            except ImportError:
+                from advanced_llm_intervention_baseline import HumanMessage as BaselineHumanMessage
+            hm = BaselineHumanMessage(t=getattr(state, "timestep", 0), text="")
+        else:
+            hm = HumanMessage(t=getattr(state, "timestep", 0), text=human_text or "")
+            if hm.text.strip():
+                print(f"[HUMAN] Consuming intervention at t={hm.t}: '{hm.text}'")
         
         try:
             # Get plan from interpreter (pass state and agent_index for intervention recording)
             plan = self.interpreter.propose_plan(state_prompt, hm, recent_history, state, self.agent_index)
+            
             # Store debug info
             try:
                 self.last_plan = {
-                    "steps": plan.steps,  # Direct list of ML_action strings
+                    "steps": plan.steps,
                 }
                 self.last_plan_category = getattr(plan, 'category', None)
                 self.last_intervention_reason = getattr(plan, 'intervention_reason', None)
-                self.last_chain_of_thought = getattr(plan, 'chain_of_thought', None)
-                print(f"[INTP] category={self.last_plan_category} steps={self.last_plan.get('steps')} intervention_reason={self.last_intervention_reason}")
-                if self.last_chain_of_thought:
-                    print(f"[INTP] CoT: {self.last_chain_of_thought}")
+                self.last_chain_of_thought = getattr(plan, 'chain_of_thought', None) if not self.use_baseline else ""
+                if not self.use_baseline:
+                    print(f"[INTP] category={self.last_plan_category} steps={self.last_plan.get('steps')} intervention_reason={self.last_intervention_reason}")
+                    if self.last_chain_of_thought:
+                        print(f"[INTP] CoT: {self.last_chain_of_thought}")
+                else:
+                    print(f"[BASELINE] steps={self.last_plan.get('steps')}")
             except Exception:
                 pass
-            # Record a memory event when a new plan is computed
-            try:
-                t = int(getattr(state, 'timestep', 0))
-                self.memory.write_events([
-                    {"t": t,
-                     "type": "plan",
-                     "steps": list(plan.steps),
-                     "category": str(getattr(plan, 'category', '')),
-                     "chain_of_thought": str(getattr(plan, 'chain_of_thought', ''))}
-                ])
-            except Exception:
-                pass
+            
+            # Record a memory event when a new plan is computed (skip in baseline mode)
+            if not self.use_baseline:
+                try:
+                    t = int(getattr(state, 'timestep', 0))
+                    self.memory.write_events([
+                        {"t": t,
+                         "type": "plan",
+                         "steps": list(plan.steps),
+                         "category": str(getattr(plan, 'category', '')),
+                         "chain_of_thought": str(getattr(plan, 'chain_of_thought', ''))}
+                    ])
+                except Exception:
+                    pass
             
             # Check for low-level override (applies for 1 step, then continues with medium-level plan)
             if hasattr(plan, 'low_level_override') and plan.low_level_override:
                 print(f"🎯 Low-level override detected: {plan.low_level_override}")
                 self.low_level_override = plan.low_level_override
-                self.low_level_override_duration = 1  # Override for 1 step
+                self.low_level_override_duration = 1
                 # Track human intervention for card learning
                 if hm.text.strip():
                     self._last_human_intervention_tick = getattr(state, 'timestep', 0)
@@ -436,9 +478,7 @@ class ProAgentWithIntervention:
             print(f"❌ Interpreter failed: {e}")
             raise
     
-    # TODO: when the interpreter fails, generate a failure message and feedback to the interpreter, replan
-    
-    # ==================== VERIFICATOR (copied from ProAgent) ====================
+    # ==================== VERIFICATOR ====================
     
     def check_current_ml_action_done(self, state):
         """
@@ -514,7 +554,7 @@ class ProAgentWithIntervention:
         elif "wait" in self.current_ml_action:
             return 0 < int(self.current_ml_action.split('(')[1][:-1]) <= 20
     
-    # ==================== CONTROLLER (copied from ProAgent) ====================
+    # ==================== CONTROLLER ====================
     
     def find_shared_counters(self, state, mlam):  
         counter_dicts = query_counter_states(self.mdp, state) 
@@ -849,6 +889,10 @@ class ProAgentWithIntervention:
     
     def maybe_auto_unstuck(self):
         # Gate: only when stalled and we have at least one human-enabled card
+        # DISABLED in baseline mode
+        if self.use_baseline:
+            return None
+            
         stall_count = self.stalled_ticks()
         if stall_count < 2:
             return None
@@ -937,7 +981,7 @@ class ProAgentWithIntervention:
         except Exception:
             return Action.STAY
     
-    # ==================== MAIN ACTION METHOD (copied from ProAgent) ====================
+    # ==================== MAIN ACTION METHOD ====================
     
     def action(self, state):
         start_pos_and_or = state.players_pos_and_or[self.agent_index]
@@ -947,10 +991,6 @@ class ProAgentWithIntervention:
         # otherwise, s_t will just record None,
         # and we here check this information and store it into proagent
         self.current_timestep = getattr(state, 'timestep', 0)
-        # Shared Overcooked state may not expose ml_actions; guard access
-        if hasattr(state, 'ml_actions'):
-            if state.ml_actions[1-self.agent_index] is not None:
-                self.teammate_ml_actions_dict[str(self.current_timestep-1)] = state.ml_actions[1-self.agent_index]
 
         # if current ml action does not exist, generate a new one (respect override)
         if self.current_ml_action is None:
@@ -1022,7 +1062,9 @@ class ProAgentWithIntervention:
             traceback.print_exc()
 
         # Write a card when human fix succeeds (progress resumed within 5 ticks)
-        if (self._last_human_intervention_tick is not None and 
+        # DISABLED in baseline mode (no memory/cards)
+        if (not self.use_baseline and
+            self._last_human_intervention_tick is not None and 
             self._last_human_intervention_action and 
             self.current_timestep - self._last_human_intervention_tick <= 5 and
             self.stalled_ticks() == 0):  # Success: no longer stalled
@@ -1053,26 +1095,28 @@ class ProAgentWithIntervention:
         # Try auto "Match→Apply" BEFORE normal low-level controller
         # ONLY trigger when agent is stalled (stuck/deadlock situation)
         # Cooldown is only used to prevent spam when making progress
+        # DISABLED in baseline mode (no memory/cards)
         reflex = None
-        cooldown_until = self._cooldowns.get("cards", 0)
-        stall_count = self.stalled_ticks()
-        
-        # ONLY try Match→Apply if agent is stalled (stuck/deadlock)
-        if stall_count >= 2:
-            # Agent is stalled - try Match→Apply (cooldown will reset if action helps)
-            if self.current_timestep < cooldown_until:
-                print(f"[Match→Apply] ⚠️ Overriding cooldown (agent stalled: {stall_count} ticks)")
-            print(f"[Match→Apply] Attempting auto-unstuck at tick {self.current_timestep} (cooldown until {cooldown_until}, stalled={stall_count})")
-            reflex = self.maybe_auto_unstuck()
-            if reflex is not None:
-                print(f"[Match→Apply] ✅ Auto-unstuck triggered!")
+        if not self.use_baseline:
+            cooldown_until = self._cooldowns.get("cards", 0)
+            stall_count = self.stalled_ticks()
+            
+            # ONLY try Match→Apply if agent is stalled (stuck/deadlock)
+            if stall_count >= 2:
+                # Agent is stalled - try Match→Apply (cooldown will reset if action helps)
+                if self.current_timestep < cooldown_until:
+                    print(f"[Match→Apply] ⚠️ Overriding cooldown (agent stalled: {stall_count} ticks)")
+                print(f"[Match→Apply] Attempting auto-unstuck at tick {self.current_timestep} (cooldown until {cooldown_until}, stalled={stall_count})")
+                reflex = self.maybe_auto_unstuck()
+                if reflex is not None:
+                    print(f"[Match→Apply] ✅ Auto-unstuck triggered!")
+                else:
+                    print(f"[Match→Apply] ❌ Auto-unstuck returned None")
             else:
-                print(f"[Match→Apply] ❌ Auto-unstuck returned None")
-        else:
-            # Agent is NOT stalled - skip Match→Apply entirely
-            if self.current_timestep < cooldown_until:
-                print(f"[Match→Apply] ⏸️ Skipping (not stalled: {stall_count}, cooldown until {cooldown_until})")
-            # No log needed if cooldown expired and not stalled - agent is making progress normally
+                # Agent is NOT stalled - skip Match→Apply entirely
+                if self.current_timestep < cooldown_until:
+                    print(f"[Match→Apply] ⏸️ Skipping (not stalled: {stall_count}, cooldown until {cooldown_until})")
+                # No log needed if cooldown expired and not stalled - agent is making progress normally
         
         if reflex is not None:
             # Apply the reflex action
@@ -1288,26 +1332,11 @@ class ProAgentWithIntervention:
         self.current_ml_action = None
         self.current_ml_action_steps = 0
         self.time_to_wait = 0
-        self.possible_motion_goals = None
         self.current_timestep = 0
-        self.teammate_ml_actions_dict = {}
-        self.teammate_intentions_dict = {}
         self.low_level_override = None
         self.low_level_override_duration = 0
-    
-    def reset(self):
-        """Reset agent state, including interpreter memory."""
-        self.prev_state = None
-        self.current_ml_action = None
-        self.current_ml_action_steps = 0
-        self.time_to_wait = 0
-        self.possible_motion_goals = None
-        self.current_timestep = 0
-        self.teammate_ml_actions_dict = {}
-        self.teammate_intentions_dict = {}
-        self.low_level_override = None
-        self.low_level_override_duration = 0
-        self.memory = AgentMemory(mdp=self.mdp)
+        if not self.use_baseline:
+            self.memory = AgentMemory(mdp=self.mdp)
         self._human_inbox.clear()
         self._recent_history.clear()
         # Reset stall tracking

@@ -66,7 +66,7 @@ def main():
     parser = argparse.ArgumentParser(description='ProAgentWithIntervention Demo')
     parser.add_argument('--layout', type=str, default='counter_circuit', help='Layout key (mapped via NEW_LAYOUTS)')
     parser.add_argument('--layout_name', type=str, default=None, help='Direct Overcooked layout name (overrides --layout)')
-    parser.add_argument('--horizon', type=int, default=500)
+    parser.add_argument('--horizon', type=int, default=400)
     parser.add_argument('--random_start', action='store_true', help='Randomize player starting positions')
     parser.add_argument(
         '--teammate',

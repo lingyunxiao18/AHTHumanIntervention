@@ -60,8 +60,9 @@ class TextDisplay:
     def update_status(self, message, color='blue', weight='normal'):
         """Update the status message (replaces previous status if exists)."""
         # Remove old status messages (those starting with status indicators)
+        # Also check for "Paused" to catch intervention typing
         self.static_lines = [line for line in self.static_lines 
-                            if not line[0].startswith(('⏸', '▶', 'Intervention', '🎯', '✅', '❌', '🧠', '🎉'))]
+                            if not (line[0].startswith(('⏸', '▶', 'Intervention', '🎯', '✅', '❌', '🧠', '🎉', 'Paused', 'Applying', 'Processed', 'Failed', 'Error', 'Memory', 'Episode')))]
         # Add new status
         if message:
             self.static_lines.append((message, color, weight))
@@ -226,16 +227,16 @@ def main():
             paused = not paused
             if paused:
                 intervention_text = ''  # Clear any previous intervention text
-                status_message = "⏸ Paused - Type intervention and press Enter"
+                status_message = "Paused - Type intervention and press Enter"
             else:
-                status_message = "▶ Resumed"
+                status_message = "Resumed"
             text_display.update_status(status_message, 'blue', 'bold')
             fig.canvas.draw()
         elif event.key == 'escape':
             if paused and intervention_text:
                 # Cancel intervention but stay paused
                 intervention_text = ''
-                status_message = "⏸ Paused - Intervention cancelled"
+                status_message = "Paused - Intervention cancelled"
                 text_display.update_status(status_message, 'orange')
             else:
                 plt.close('all')
@@ -248,18 +249,18 @@ def main():
             paused = False  # Resume after sending intervention
             if cmd:
                 try:
-                    status_message = f"🎯 Applying: '{cmd}'"
+                    status_message = f"Applying: '{cmd}'"
                     text_display.update_status(status_message, 'green', 'bold')
                     fig.canvas.draw()
                     success = p0.process_human_intervention(cmd)
                     if success:
-                        status_message = f"✅ Processed: '{cmd}' - Resumed"
+                        status_message = f"Processed: '{cmd}' - Resumed"
                         text_display.update_status(status_message, 'green')
                     else:
-                        status_message = f"❌ Failed: '{cmd}' - Resumed"
+                        status_message = f"Failed: '{cmd}' - Resumed"
                         text_display.update_status(status_message, 'red')
                 except Exception as e:
-                    status_message = f"❌ Error: {e} - Resumed"
+                    status_message = f"Error: {e} - Resumed"
                     text_display.update_status(status_message, 'red')
             else:
                 status_message = "▶ Resumed (no intervention)"
@@ -267,25 +268,25 @@ def main():
             fig.canvas.draw()
         elif event.key == 'backspace' and paused:
             intervention_text = intervention_text[:-1]
-            status_message = f"⏸ Paused - Intervention: {intervention_text}_"
+            status_message = f"Paused - Intervention: {intervention_text}_"
             text_display.update_status(status_message, 'blue')
             fig.canvas.draw()
         elif paused and event.key and len(event.key) == 1:
             # When paused, typing directly enters intervention text
             intervention_text += event.key
-            status_message = f"⏸ Paused - Intervention: {intervention_text}_"
+            status_message = f"Paused - Intervention: {intervention_text}_"
             text_display.update_status(status_message, 'blue')
             fig.canvas.draw()
         elif event.key == 'm':
             try:
                 if hasattr(p0, 'memory'):
                     memory = p0.memory
-                    status_message = f"🧠 Memory: {len(memory.semantic)} semantic, {len(memory.episodic)} episodic"
+                    status_message = f"Memory: {len(memory.semantic)} semantic, {len(memory.episodic)} episodic"
                 else:
-                    status_message = "🧠 No memory found"
+                    status_message = "No memory found"
                 text_display.update_status(status_message, 'purple')
             except Exception as e:
-                status_message = f"❌ Memory error: {e}"
+                status_message = f"Memory error: {e}"
                 text_display.update_status(status_message, 'red')
             fig.canvas.draw()
     
@@ -313,7 +314,7 @@ def main():
     plt.show()
     
     # Initial instructions (static)
-    text_display.add_static_line("🤖 CrowdNav-AHT Demo", color='black', weight='bold')
+    text_display.add_static_line("CrowdNav-AHT Demo", color='black', weight='bold')
     text_display.add_static_line("Controls: p=pause/resume, m=memory, ESC=quit", color='gray')
     text_display.add_static_line("When paused: type intervention, press Enter", color='gray')
     text_display.add_static_line("", color='black')  # Spacer
@@ -347,10 +348,10 @@ def main():
                 step_lines.append((f"[STEP {step}]", 'black', 'bold'))
                 
                 if last_intervention_reason:
-                    step_lines.append((f"🎯 Reason: {last_intervention_reason}", 'orange', 'normal'))
+                    step_lines.append((f"Reason: {last_intervention_reason}", 'orange', 'normal'))
                 
                 if last_chain_of_thought:
-                    step_lines.append(("🧠 Chain of Thought:", 'purple', 'bold'))
+                    step_lines.append(("Chain of Thought:", 'purple', 'bold'))
                     # Split and display CoT (limit to key parts)
                     cot_lines = last_chain_of_thought.split('\n')
                     for line in cot_lines[:8]:  # Limit to 8 lines
@@ -361,12 +362,12 @@ def main():
                 
                 if last_plan:
                     steps_str = ', '.join(map(str, last_plan.get('steps', [])))
-                    step_lines.append((f"📋 Plan: [{steps_str}]", 'blue', 'normal'))
+                    step_lines.append((f"Plan: [{steps_str}]", 'blue', 'normal'))
                 
                 waypoint_names = {0: "up", 1: "down", 2: "left", 3: "right", 
                                  4: "up-right", 5: "up-left", 6: "down-right", 7: "down-left"}
                 action_name = waypoint_names.get(action, f"unknown({action})")
-                step_lines.append((f"🎮 Action: {action} ({action_name})", 'green', 'bold'))
+                step_lines.append((f"Action: {action} ({action_name})", 'green', 'bold'))
                 
             except Exception as e:
                 step_lines.append((f"[STEP {step}] Error: {e}", 'red', 'normal'))
@@ -387,7 +388,7 @@ def main():
                 time.sleep(0.05)  # 10 * 0.05 = 0.5 seconds total
 
             if done:
-                status_message = f"🎉 Episode ended: {info}"
+                status_message = f"Episode ended: {info}"
                 text_display.update_status(status_message, 'green', 'bold')
                 obs = env.reset()
                 step = 0
