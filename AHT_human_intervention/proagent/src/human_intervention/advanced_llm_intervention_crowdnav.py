@@ -313,7 +313,7 @@ class LLMClient:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1,
-                max_tokens=2048,
+                max_completion_tokens=2048,
             )
 
             try:
@@ -399,7 +399,7 @@ class LLMClient:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1,
-                max_tokens=512,
+                max_completion_tokens=512,
             )
             text_out = response.choices[0].message.content
             obj = json.loads(text_out)

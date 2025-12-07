@@ -101,25 +101,27 @@ def run_single_trial(trial_num: int, layout_name: str, layout_key: str, horizon:
         # Create agents
         # Player0: Baseline ProAgent (use_baseline=True disables CoT and memory)
         base_agent = pro_utils.make_agent(
-            'ProAgent', mdp, layout_key, 
-            model='gpt-4o-mini', 
-            retrival_method='recent_k', 
-            K=10, 
-            prompt_level='l2-ap', 
-            belief_revision=True, 
-            auto_unstuck=False
-        )
-        
-        p0 = ProAgentWithIntervention(
-            base_agent.mlam, 
+            'ProAgent',
+            mdp,
             layout_key,
-            model='gpt-4o-mini',
+            model='gpt-5-mini',
             retrival_method='recent_k',
             K=10,
             prompt_level='l2-ap',
             belief_revision=True,
             auto_unstuck=False,
-            use_baseline=True  # Enable baseline mode (no CoT, no memory)
+        )
+        
+        p0 = ProAgentWithIntervention(
+            base_agent.mlam,
+            layout_key,
+            model='gpt-5-mini',
+            retrival_method='recent_k',
+            K=10,
+            prompt_level='l2-ap',
+            belief_revision=True,
+            auto_unstuck=False,
+            use_baseline=True,  # Enable baseline mode (no CoT, no memory)
         )
         p0.set_agent_index(0)
         

@@ -100,11 +100,23 @@ class Module(object):
                     # Legacy completions (rarely used here)
                     prompt = convert_messages_to_prompt(messages) 
                     if client is not None and hasattr(client, 'completions'):
-                        resp = client.completions.create(model=self.model, prompt=prompt, temperature=temperature, max_tokens=256, stop=stop)
+                        resp = client.completions.create(
+                            model=self.model,
+                            prompt=prompt,
+                            temperature=temperature,
+                            max_tokens=256,
+                            stop=stop,
+                        )
                         response_text = resp.choices[0].text
                     else:
                         openai.api_key = key
-                        resp = openai.Completion.create(model=self.model, prompt=prompt, temperature=temperature, max_tokens=256, stop=stop)
+                        resp = openai.Completion.create(
+                            model=self.model,
+                            prompt=prompt,
+                            temperature=temperature,
+                            max_tokens=256,
+                            stop=stop,
+                        )
                         response_text = resp["choices"][0]["text"]
                 else:
                     # Chat-style models: try new Responses API first for 4.1/4o families
@@ -129,7 +141,7 @@ class Module(object):
                                 model=self.model,
                                 messages=messages,
                                 temperature=temperature,
-                                max_tokens=256,
+                                max_completion_tokens=256,
                                 stop=stop,
                             )
                             response_text = resp.choices[0].message.content

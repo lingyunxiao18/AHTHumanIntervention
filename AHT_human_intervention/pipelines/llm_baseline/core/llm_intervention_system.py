@@ -323,7 +323,7 @@ class LLMInterventionSystem:
                     {"role": "user", "content": user_content}
                 ],
                 temperature=0.1,
-                max_tokens=400
+                max_completion_tokens=400,
             )
 
             print(system_content)

@@ -67,8 +67,8 @@ class LLMInstructionEvaluator:
                     {"role": "system", "content": "You are an expert evaluator of human-AI instruction compliance in cooking games."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=100,
-                temperature=0.1
+                max_completion_tokens=100,
+                temperature=0.1,
             )
             
             # Parse response for compliance score

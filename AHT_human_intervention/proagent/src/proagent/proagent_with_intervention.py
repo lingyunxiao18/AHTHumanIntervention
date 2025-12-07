@@ -3,17 +3,13 @@
 ProAgent with Advanced LLM Intervention Support
 
 This is a self-contained agent that uses AdvancedLLMInterpreter (CoT + Memory) as the planner
-while incorporating the exact controller and verificator logic from the original ProAgent.
+while incorporating the controller and verificator logic from the original ProAgent.
 """
 
 import os
 import sys
-import copy
-import itertools
-import json
 import re
 import numpy as np
-import pkg_resources
 from collections import defaultdict
 from typing import Optional, Dict, Any, List
 
@@ -25,29 +21,10 @@ if PROJECT_ROOT not in sys.path:
 # Import Overcooked primitives
 from shared.envs.envs.overcooked.overcooked_ai_py.mdp.actions import Action, Direction
 
-# Try to import helpers; fallback to stubs if not available
-try:
-    from shared.envs.envs.overcooked.overcooked_ai_py.planning.search import get_intersect_counter, query_counter_states
-except Exception:
-    def get_intersect_counter(*args, **kwargs):
-        return []
-    def query_counter_states(*args, **kwargs):
-        return {}
-
 # Import advanced intervention system
-try:
-    from ..human_intervention.advanced_llm_intervention import (
-        AgentMemory,
-        AdvancedLLMInterpreter,
-        HumanMessage,
-        LLMClient,
-        PROAGENT_ALLOWED_ML_ACTIONS,
-    )
-except ImportError:
-    # Fallback for different import contexts
-    intervention_path = os.path.join(PROJECT_ROOT, 'proagent', 'src', 'human_intervention')
-    if intervention_path not in sys.path:
-        sys.path.append(intervention_path)
+intervention_path = os.path.join(PROJECT_ROOT, 'proagent', 'src', 'human_intervention')
+if intervention_path not in sys.path:
+    sys.path.append(intervention_path)
     from advanced_llm_intervention import (
         AgentMemory,
         AdvancedLLMInterpreter,
@@ -56,17 +33,9 @@ except ImportError:
         PROAGENT_ALLOWED_ML_ACTIONS,
     )
 
-cwd = os.getcwd()
-openai_key_file = os.path.join(cwd, "openai_key.txt")
-
-NAME_TO_ACTION = {
-    "NORTH": Direction.NORTH,
-    "SOUTH": Direction.SOUTH,
-    "EAST": Direction.EAST,
-    "WEST": Direction.WEST,
-    "INTERACT": Action.INTERACT,
-    "STAY": Action.STAY
-}
+# OpenAI key file is at workspace root (one level up from PROJECT_ROOT)
+WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
+openai_key_file = os.path.join(WORKSPACE_ROOT, "openai_key.txt")
 
 # Mapping for low-level override strings to action constants
 LOW_LEVEL_OVERRIDE_TO_ACTION = {
@@ -74,55 +43,67 @@ LOW_LEVEL_OVERRIDE_TO_ACTION = {
     "move_south": Direction.SOUTH,
     "move_east": Direction.EAST,
     "move_west": Direction.WEST,
-    "wait": Action.STAY,  # Wait is implemented as STAY
+    "wait": Action.STAY,  
     "interact": Action.INTERACT,
     "stay": Action.STAY,
 }
 
+# ==================== EVENT DETECTION ====================
 
-def make_card_from_success(ctx: Dict[str, Any], chosen_action: str, human_text: str = "") -> Dict[str, Any]:
+def detect_environment_events(state, prev_state, stuck_counter, agent_index=0):
     """
-    Create an intervention card from a successful human fix.
-    Uses the actual human words to make keyword matching work.
-    """
-    # Extract keywords from human text for better matching
-    human_words = human_text.lower() if human_text else ""
+    Detect environment events that can trigger intervention pattern reuse.
     
-    # Create a title from human text, or use a generic one
-    if human_words:
-        # Extract key phrases: "stuck", "unstuck", "blocked", "same tile", etc.
-        if "stuck" in human_words or "unstuck" in human_words:
-            title = f"Getting unstuck: {human_text[:40]}"
-        elif "teammate" in human_words and ("same" in human_words or "tile" in human_words):
-            title = f"Teammate collision: {human_text[:40]}"
-        elif "move" in human_words or "step" in human_words:
-            title = f"Movement fix: {human_text[:40]}"
+    Args:
+        state: Current game state
+        prev_state: Previous game state (None if first step)
+        stuck_counter: Current stuck counter (number of steps without position change)
+        agent_index: Index of the ego agent
+        
+    Returns:
+        events: List of detected event strings
+        stuck_counter: Updated stuck counter
+    """
+    events = []
+    
+    if state is None or len(state.players) < 2:
+        return events, stuck_counter
+    
+    ego = state.players[agent_index]
+    teammate = state.players[1 - agent_index]
+    ego_pos = tuple(ego.position)
+    mate_pos = tuple(teammate.position)
+    
+    # --- Event 1: no progress / stuck ---
+    if prev_state is not None and len(prev_state.players) > agent_index:
+        prev_pos = tuple(prev_state.players[agent_index].position)
+        if ego_pos == prev_pos:
+            stuck_counter += 1
         else:
-            title = f"Intervention: {human_text[:40]}"
+            stuck_counter = 0
+        
+        if stuck_counter >= 3:  # threshold adjustable
+            events.append("no_progress")
     else:
-        title = "Head-on deadlock: yield once"
+        stuck_counter = 0
     
-    # Create when_text that includes human's actual words
-    if human_text:
-        when_text = f"Human said: '{human_text}'. Agent stuck or blocked; no progress for ≥2 ticks."
+    # --- Event 2: teammate blocking path (adjacent + wanting same tile) ---
+    manhattan_dist = abs(ego_pos[0] - mate_pos[0]) + abs(ego_pos[1] - mate_pos[1])
+    if manhattan_dist == 1:
+        events.append("teammate_blocking")
+    
+    # --- Event 3: deadlock heuristic (stuck + teammate present) ---
+    if "no_progress" in events and "teammate_blocking" in events:
+        events.append("deadlock")
+    
+    # Debug output
+    if prev_state is not None:
+        prev_pos = tuple(prev_state.players[agent_index].position) if len(prev_state.players) > agent_index else None
+        print(f"[EVENT_DEBUG] ego_pos={ego_pos}, prev_pos={prev_pos}, stuck_counter={stuck_counter}, manhattan_dist={manhattan_dist}, events={events}")
     else:
-        when_text = "Both agents contend for same tile or try to swap; no progress for ≥2 ticks."
+        print(f"[EVENT_DEBUG] prev_state=None, ego_pos={ego_pos}, stuck_counter={stuck_counter}, manhattan_dist={manhattan_dist}, events={events}")
     
-    return {
-        "id": f"card_{int(ctx.get('tick',0))}",
-        "title": title,
-        "when_text": when_text,
-        "human_text": human_text,  # Store original for reference
-        "local_clues": [
-            "teammate directly ahead or on contested tile",
-            "corridor 1-wide or laterals blocked",
-            "distance to subgoal unchanged ≥2 ticks"
-        ],
-        "action_text": f"Take ONE egocentric step ({chosen_action}), then continue plan.",
-        "safety": ["never FORWARD into teammate", "cooldown 8 ticks"],
-        "enabled_by_human": True,
-        "example_trace": ctx.get("mini_trace",""),
-    }
+    return events, stuck_counter
 
 
 class ProAgentWithIntervention:
@@ -136,8 +117,7 @@ class ProAgentWithIntervention:
         - Complete independence from base ProAgent class
     """
     
-    def __init__(self, mlam, layout, model='gpt-4o-mini', 
-                 auto_unstuck=False, controller_mode='new', 
+    def __init__(self, mlam, layout, model='gpt-5-mini', 
                  agent_index=None, history_horizon=8, 
                  use_baseline=False, **kwargs):
         """
@@ -151,8 +131,6 @@ class ProAgentWithIntervention:
         self.layout = layout
         self.mdp = self.mlam.mdp
         self.agent_index = agent_index
-        self.auto_unstuck = auto_unstuck
-        self.controller_mode = controller_mode
         self.use_baseline = use_baseline
         
         # OpenAI API key handling
@@ -221,11 +199,6 @@ class ProAgentWithIntervention:
         self._human_inbox: List[str] = []
         self._recent_history: List[Dict[str, Any]] = []
         self._intervention_history: List[str] = []
-
-        # Stall tracking for Match→Apply
-        self._stall_ticks = 0
-        self._prev_subgoal_distance = None
-        self._cooldowns = {}
         self._last_human_intervention_tick = None
         self._last_human_intervention_action = None
         self._last_human_intervention_text = None
@@ -236,6 +209,10 @@ class ProAgentWithIntervention:
         self.last_plan_rationale: Optional[str] = None
         self.last_intervention_reason: Optional[str] = None
         self.last_chain_of_thought: Optional[str] = None
+        
+        # Event-based trigger system for proactive intervention reuse
+        self._prev_state = None
+        self._stuck_counter = 0
     
     # ==================== OpenAI Key Management ====================
     
@@ -245,22 +222,14 @@ class ProAgentWithIntervention:
         if api_key_env:
             self.openai_api_keys = [api_key_env.strip()]
             return
-        # 2) Try CWD openai_key.txt (repo root during demos)
+        # 2) Try workspace root openai_key.txt
         if os.path.exists(openai_key_file):
             with open(openai_key_file, "r") as f:
                 context = f.read()
             self.openai_api_keys = [k for k in context.split('\n') if k.strip()]
             if self.openai_api_keys:
                 return
-        # 3) Fallback to proagent/src/openai_key.txt
-        alt_key_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "openai_key.txt"))
-        if os.path.exists(alt_key_file):
-            with open(alt_key_file, "r") as f:
-                context = f.read()
-            self.openai_api_keys = [k for k in context.split('\n') if k.strip()]
-            if self.openai_api_keys:
-                return
-        raise FileNotFoundError("OPENAI_API_KEY not set and openai_key.txt not found in CWD or proagent/src/")
+        raise FileNotFoundError("OPENAI_API_KEY not set and openai_key.txt not found in workspace root")
 
     def openai_api_key(self):
         if self.key_rotation:
@@ -324,77 +293,51 @@ class ProAgentWithIntervention:
 
         pot_states_dict = self.mdp.get_pot_states(state)   
 
-        if pkg_resources.get_distribution("overcooked_ai").version == '1.1.0':
-            for key in pot_states_dict.keys():
-                if key == "cooking":
-                    for pos in pot_states_dict[key]:
+        # Version 0.0.1: nested structure by soup type
+        for key in pot_states_dict.keys():
+            if key == "empty":
+                for pos in pot_states_dict[key]: 
+                    pot_id = self.pot_id_to_pos.index(pos)
+                    kitchen_state_prompt += prompt_dict[key].format(id=pot_id)     
+            else: # key = 'onion' or 'tomota'
+                for soup_key in pot_states_dict[key].keys():
+                    # soup_key: ready, cooking, partially_full
+                    for pos in pot_states_dict[key][soup_key]:
                         pot_id = self.pot_id_to_pos.index(pos)
                         soup_object = state.get_object(pos)
-                        kitchen_state_prompt += prompt_dict[key].format(id=pot_id, t=soup_object.cook_time_remaining)
-                else:
-                    for pos in pot_states_dict[key]:
-                        pot_id = self.pot_id_to_pos.index(pos)
-                        kitchen_state_prompt += prompt_dict[key].format(id=pot_id) 
-        
-        elif pkg_resources.get_distribution("overcooked_ai").version == '0.0.1':
-            for key in pot_states_dict.keys():
-                if key == "empty":
-                    for pos in pot_states_dict[key]: 
-                        pot_id = self.pot_id_to_pos.index(pos)
-                        kitchen_state_prompt += prompt_dict[key].format(id=pot_id)     
-                else: # key = 'onion' or 'tomota'
-                    for soup_key in pot_states_dict[key].keys():
-                        # soup_key: ready, cooking, partially_full
-                        for pos in pot_states_dict[key][soup_key]:
-                            pot_id = self.pot_id_to_pos.index(pos)
-                            soup_object = state.get_object(pos)
-                            soup_type, num_items, cook_time = soup_object.state
-                            if soup_key == "cooking":
-                                kitchen_state_prompt += prompt_dict[soup_key].format(id=pot_id, t=self.mdp.soup_cooking_time-cook_time)
-                            elif soup_key == "partially_full":
-                                pass
-                            else:
-                                kitchen_state_prompt += prompt_dict[soup_key].format(id=pot_id)
+                        soup_type, num_items, cook_time = soup_object.state
+                        if soup_key == "cooking":
+                            kitchen_state_prompt += prompt_dict[soup_key].format(id=pot_id, t=self.mdp.soup_cooking_time-cook_time)
+                        elif soup_key == "partially_full":
+                            pass
+                        else:
+                            kitchen_state_prompt += prompt_dict[soup_key].format(id=pot_id)
 
-        intersect_counters = get_intersect_counter(
-                                state.players_pos_and_or[self.agent_index], 
-                                state.players_pos_and_or[1 - self.agent_index], 
-                                self.mdp, 
-                                self.mlam
-                            )
-        counter_states = query_counter_states(self.mdp, state)  
-
-        if self.layout == 'forced_coordination': 
-            kitchen_state_prompt += '{} counters can be visited by <Player {}>. Their states are as follows: '.format(len(intersect_counters), self.agent_index)
-            count_states = {}  
-            for i in intersect_counters:  
-                obj_i = 'nothing' 
-                if counter_states[i] != ' ': 
-                    obj_i = counter_states[i]                
-                if obj_i in count_states:  
-                    count_states[obj_i] += 1
-                else: 
-                    count_states[obj_i]  = 1 
-            total_obj = ['onion', 'dish']
-            for i in count_states:   
-                if i == 'nothing': 
-                    continue 
-                kitchen_state_prompt += f'{count_states[i]} counters have {i}. '   
-            for i in total_obj: 
-                if i not in count_states:        
-                    kitchen_state_prompt += f'No counters have {i}. ' 
         return (self.layout_prompt + time_prompt + ego_state_prompt +
                 teammate_state_prompt + kitchen_state_prompt)
     
     # ==================== PLANNER: AdvancedLLMInterpreter Integration ====================
     
-    def generate_ml_action(self, state):
+    def generate_ml_action(self, state, events=None):
         """
-        REPLACED: Use AdvancedLLMInterpreter instead of GPT planner.
         Generates medium-level actions using CoT reasoning + memory (or baseline without CoT/memory).
+        
+        Args:
+            state: Current game state
+            events: Optional list of detected events (if None, will detect them here)
         """
         # Use text-based state prompt (same as original ProAgent)
         state_prompt = self.generate_state_prompt(state)
+        
+        # Include events in prompt if provided (events are detected in action() method)
+        if events is None:
+            # Fallback: detect events here if not provided
+            events, _ = detect_environment_events(
+                state, self._prev_state, self._stuck_counter, self.agent_index
+            )
+        if events:
+            state_prompt += f"\nEVENTS: {events}"
+            print(f"🔍 Including events in prompt: {events}")
         
         # Get recent history with teammate actions
         recent_history = self._recent_history[-self.history_horizon:]
@@ -419,8 +362,8 @@ class ProAgentWithIntervention:
                 print(f"[HUMAN] Consuming intervention at t={hm.t}: '{hm.text}'")
         
         try:
-            # Get plan from interpreter (pass state and agent_index for intervention recording)
-            plan = self.interpreter.propose_plan(state_prompt, hm, recent_history, state, self.agent_index)
+            # Get plan from interpreter (pass state, agent_index, and events for intervention recording)
+            plan = self.interpreter.propose_plan(state_prompt, hm, recent_history, state, self.agent_index, events=events)
             
             # Store debug info
             try:
@@ -478,7 +421,7 @@ class ProAgentWithIntervention:
             print(f"❌ Interpreter failed: {e}")
             raise
     
-    # ==================== VERIFICATOR ====================
+    # ==================== VERIFIER ====================
     
     def check_current_ml_action_done(self, state):
         """
@@ -512,16 +455,11 @@ class ProAgentWithIntervention:
 
         pot_states_dict = self.mdp.get_pot_states(state)
         player = state.players[self.agent_index]
-        if pkg_resources.get_distribution("overcooked_ai").version == '1.1.0':
-            soup_cooking = len(pot_states_dict['cooking']) > 0
-            soup_ready = len(pot_states_dict['ready']) > 0
-            pot_not_full = pot_states_dict["empty"] + self.mdp.get_partially_full_pots(pot_states_dict)
-            cookable_pots = self.mdp.get_full_but_not_cooking_pots(pot_states_dict)
-        elif pkg_resources.get_distribution("overcooked_ai").version == '0.0.1':
-            soup_cooking = len(pot_states_dict['onion']['cooking']) > 0
-            soup_ready = len(pot_states_dict['onion']['ready']) > 0
-            pot_not_full = pot_states_dict["empty"] + pot_states_dict["onion"]['partially_full']
-            cookable_pots = pot_states_dict["onion"]['{}_items'.format(self.mdp.num_items_for_soup)]
+        # Version 0.0.1: nested structure by soup type
+        soup_cooking = len(pot_states_dict['onion']['cooking']) > 0
+        soup_ready = len(pot_states_dict['onion']['ready']) > 0
+        pot_not_full = pot_states_dict["empty"] + pot_states_dict["onion"]['partially_full']
+        cookable_pots = pot_states_dict["onion"]['{}_items'.format(self.mdp.num_items_for_soup)]
 
         has_onion = False
         has_dish = False
@@ -557,21 +495,11 @@ class ProAgentWithIntervention:
     # ==================== CONTROLLER ====================
     
     def find_shared_counters(self, state, mlam):  
-        counter_dicts = query_counter_states(self.mdp, state) 
-
-        counter_list  = get_intersect_counter(state.players_pos_and_or[self.agent_index],
-                        state.players_pos_and_or[1 - self.agent_index], 
-                        self.mdp, 
-                        self.mlam
-                    )    
-
-        print('counter_list = {}'.format(counter_list))  
-        lis = [] 
-        for i in counter_list:  
-            if counter_dicts[i] == ' ':  
-                lis.append(i)       
-        available_plans = mlam._get_ml_actions_for_positions(lis)
-        return available_plans          
+        empty_counters = self.mdp.get_empty_counter_locations(state)
+        if empty_counters:
+            available_plans = mlam._get_ml_actions_for_positions(empty_counters)
+            return available_plans
+        return []          
 
     def find_motion_goals(self, state):
         """
@@ -608,12 +536,9 @@ class ProAgentWithIntervention:
                 motion_goals = am.place_obj_on_counter_actions(state)
 
         elif "start_cooking" in self.current_ml_action:
-            if pkg_resources.get_distribution("overcooked_ai").version == '1.1.0':
-                next_order = list(state.all_orders)[0]
-                soups_ready_to_cook_key = "{}_items".format(len(next_order.ingredients))
-                soups_ready_to_cook = pot_states_dict[soups_ready_to_cook_key]
-            elif pkg_resources.get_distribution("overcooked_ai").version == '0.0.1':
-                soups_ready_to_cook = pot_states_dict["onion"]['{}_items'.format(self.mdp.num_items_for_soup)]
+            # Version 0.0.1: fixed recipe size
+            soups_ready_to_cook_key = "{}_items".format(self.mdp.num_items_for_soup)
+            soups_ready_to_cook = pot_states_dict["onion"]['{}_items'.format(self.mdp.num_items_for_soup)]
             only_pot_states_ready_to_cook = defaultdict(list)
             only_pot_states_ready_to_cook[soups_ready_to_cook_key] = soups_ready_to_cook
             motion_goals = am.start_cooking_actions(only_pot_states_ready_to_cook)
@@ -641,24 +566,16 @@ class ProAgentWithIntervention:
     def choose_motion_goal(self, start_pos_and_or, motion_goals, state = None):
         """
         For each motion goal, consider the optimal motion plan that reaches the desired location.
-        Based on the plan's cost, the method chooses a motion goal (either boltzmann rationally
-        or rationally), and returns the plan and the corresponding first action on that plan.
+        Based on the plan's cost, the method chooses a motion goal and returns the plan 
+        and the corresponding first action on that plan.
+        Uses collision-aware pathfinding to avoid teammate collisions.
         """
-
-        if self.controller_mode == 'new':
-            (
-                chosen_goal,
-                chosen_goal_action,
-            ) = self.get_lowest_cost_action_and_goal_new(
-                start_pos_and_or, motion_goals, state
-            )
-        else: 
-            (
-                chosen_goal,
-                chosen_goal_action,
-            ) = self.get_lowest_cost_action_and_goal(
-                start_pos_and_or, motion_goals
-            )
+        (
+            chosen_goal,
+            chosen_goal_action,
+        ) = self.get_lowest_cost_action_and_goal_new(
+            start_pos_and_or, motion_goals, state
+        )
         return chosen_goal, chosen_goal_action
     
     def get_lowest_cost_action_and_goal(self, start_pos_and_or, motion_goals):
@@ -810,177 +727,6 @@ class ProAgentWithIntervention:
             
         return (new_pos, new_orientation)
     
-    # ==================== STALL TRACKING FOR MATCH→APPLY ====================
-    
-    def stalled_ticks(self) -> int:
-        return getattr(self, "_stall_ticks", 0)
-
-    def update_stall_counter(self, d_prev: int, d_now: int) -> None:
-        """Update stall counter based on distance to subgoal. Also check position-based stall."""
-        # Check if distance is not decreasing (stuck making progress)
-        if d_now >= d_prev:
-            self._stall_ticks = (getattr(self, "_stall_ticks", 0) + 1)
-        else:
-            # Distance decreased - progress made!
-            self._stall_ticks = 0
-            # Reset cooldown when progress is made (distance decreased)
-            if hasattr(self, '_cooldowns'):
-                self._cooldowns["cards"] = 0
-
-    def is_headon_conflict(self) -> bool:
-        try:
-            if self.prev_state is None:
-                return False
-            a0 = tuple(self.prev_state.players[self.agent_index].position)
-            b0 = tuple(self.prev_state.players[1 - self.agent_index].position)
-            # Best-effort next intents if you already compute them; else approximate via facing
-            a1 = a0  # fallback if not available
-            b1 = b0
-            return (a1 == b1) or (a1 == b0 and b1 == a0)
-        except Exception:
-            return False
-
-    def local_corridor_width(self) -> int:
-        # Simple local lateral-free count (0/1/2), safe fallback if mdp API differs
-        try:
-            if self.prev_state is None:
-                return 0
-            ego = self.prev_state.players[self.agent_index]
-            x, y = ego.position
-            laterals = [(x+1,y),(x-1,y)]
-            free = 0
-            for u,v in laterals:
-                try:
-                    if self.mdp.get_terrain_type_at_pos((u,v)) == ' ':
-                        free += 1
-                except Exception:
-                    pass
-            return free
-        except Exception:
-            return 0
-
-    def free_dirs_egocentric(self) -> Dict[str,bool]:
-        # Minimal: LEFT/RIGHT/BACK/FORWARD relative to last facing (fallback = grid neighbors)
-        # Implemented conservatively to avoid FORWARD into teammate
-        res = {"LEFT": True, "RIGHT": True, "BACK": True, "FORWARD": False}
-        try:
-            if self.prev_state is None:
-                return res
-            player = self.prev_state.players[self.agent_index]
-            # Use mdp.get_valid_actions if present; mark walls/counters as blocked
-            valid = set(self.mdp.get_valid_actions(player))
-            # Map to egocentric is domain-specific; keep conservative defaults
-            res["FORWARD"] = (Action.INTERACT not in valid) and (Direction.NORTH in valid or Direction.SOUTH in valid or Direction.EAST in valid or Direction.WEST in valid)
-        except Exception:
-            pass
-        return res
-
-    def situation_summary(self) -> str:
-        free = self.free_dirs_egocentric()
-        parts = [
-            f"- stalled_ticks = {self.stalled_ticks()}",
-            f"- headon_conflict = {int(self.is_headon_conflict())}",
-            f"- corridor_width_local = {self.local_corridor_width()}",
-            f"- holding = {getattr(self, 'holding_item', 'unknown')}",
-            f"- last_move = {getattr(self, 'last_move', 'unknown')}",
-            f"- free_moves = " + ",".join([d for d,v in free.items() if v]),
-        ]
-        return "SITUATION (egocentric):\n" + "\n".join(parts)
-    
-    def maybe_auto_unstuck(self):
-        # Gate: only when stalled and we have at least one human-enabled card
-        # DISABLED in baseline mode
-        if self.use_baseline:
-            return None
-            
-        stall_count = self.stalled_ticks()
-        if stall_count < 2:
-            return None
-        
-        cards_all = self.memory.semantic.get("playbook_cards", [])
-        human_enabled = [c for c in cards_all if c.get("enabled_by_human")]
-        print(f"[Match→Apply] Checking: stalled={stall_count}, total_cards={len(cards_all)}, human_enabled={len(human_enabled)}")
-        
-        if not human_enabled:
-            print(f"[Match→Apply] No human-enabled cards found")
-            return None
-
-        # Pick a small set of candidate cards by keywords
-        # Include common human phrases for getting unstuck
-        query = ["stuck","unstuck","deadlock","head-on","swap","yield","teammate","same","tile","blocked","move","step"]
-        cards = self.memory.topk_cards(query, k=5)
-        print(f"[Match→Apply] Query cards with keywords {query}: found {len(cards)} matches")
-        if cards:
-            print(f"[Match→Apply] Matching cards: {[c.get('id') + ': ' + c.get('title', '')[:50] for c in cards]}")
-        if not cards:
-            print(f"[Match→Apply] No cards matched keywords")
-            return None
-
-        # Build prompt pieces
-        situation = self.situation_summary()
-        cards_text = "\n\n".join([
-            f"[{c['id']}] {c['title']}\nWHEN: {c['when_text']}\nACTION: {c['action_text']}\nSAFETY: {', '.join(c.get('safety',[]))}"
-            for c in cards
-        ])
-        user_prompt = f"CURRENT SITUATION:\n{situation}\n\nINTERVENTION CARDS:\n{cards_text}\n\nDecide and fill the JSON."
-
-        # System section name must match what you appended in advanced_llm_system_rules.txt
-        # The match_apply method will automatically load the Match→Apply section from the file
-        system_text = "MATCH→APPLY CONTROLLER (CARD MATCHING)"
-
-        try:
-            print(f"[Match→Apply] Querying LLM with {len(cards)} cards...")
-            result = self.llm_client.match_apply(system=system_text, user=user_prompt)
-            print(f"[Match→Apply] LLM response: apply={result.get('apply') if result else None}, matched_card={result.get('matched_card_id') if result else None}")
-        except Exception as e:
-            print(f"[LLM] Match→Apply exception: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-        if not result or not result.get("apply"):
-            print(f"[Match→Apply] LLM decided not to apply (apply={result.get('apply') if result else None})")
-            return None
-
-        move = result.get("low_level_override")
-        if move not in {"LEFT","RIGHT","BACK","WAIT"}:
-            print(f"[Match→Apply] Invalid move from LLM: {move}")
-            return None  # safety
-        
-        print(f"[Match→Apply] ✅ LLM matched card '{result.get('matched_card_id')}': {result.get('similarity_reason', '')}")
-
-        # Cooldown bookkeeping - only set cooldown if we're applying
-        # The cooldown will be reset if the action actually helps (position changes/distance decreases)
-        self._cooldowns = getattr(self, "_cooldowns", {})
-        cooldown_duration = int(result.get("cooldown", 4))  # Reduced from 8 to 4 ticks
-        self._cooldowns["cards"] = self.current_timestep + cooldown_duration
-        print(f"[Match→Apply] Cooldown set to tick {self._cooldowns['cards']} (duration={cooldown_duration})")
-
-        # IMPORTANT: keep current ML plan (your system contract)
-        return {"low_level_override": move, "steps": [self.current_ml_action]}
-    
-    def _egocentric_to_action(self, ego_dir: str, player) -> Optional[Any]:
-        """Convert egocentric direction (LEFT/RIGHT/BACK/WAIT) to actual action."""
-        if ego_dir == "WAIT":
-            return Action.STAY
-        try:
-            # Get current orientation
-            orientation = player.orientation
-            # Map egocentric to cardinal based on facing
-            if orientation == Direction.NORTH:
-                dir_map = {"LEFT": Direction.WEST, "RIGHT": Direction.EAST, "BACK": Direction.SOUTH}
-            elif orientation == Direction.SOUTH:
-                dir_map = {"LEFT": Direction.EAST, "RIGHT": Direction.WEST, "BACK": Direction.NORTH}
-            elif orientation == Direction.EAST:
-                dir_map = {"LEFT": Direction.NORTH, "RIGHT": Direction.SOUTH, "BACK": Direction.WEST}
-            elif orientation == Direction.WEST:
-                dir_map = {"LEFT": Direction.SOUTH, "RIGHT": Direction.NORTH, "BACK": Direction.EAST}
-            else:
-                return Action.STAY  # fallback
-            return dir_map.get(ego_dir, Action.STAY)
-        except Exception:
-            return Action.STAY
-    
     # ==================== MAIN ACTION METHOD ====================
     
     def action(self, state):
@@ -991,151 +737,51 @@ class ProAgentWithIntervention:
         # otherwise, s_t will just record None,
         # and we here check this information and store it into proagent
         self.current_timestep = getattr(state, 'timestep', 0)
+        
+        # Detect environment events EVERY STEP (not just when generating new ML action)
+        # This allows us to detect deadlocks even when ML action is still in progress
+        print(f"[EVENT_CHECK] Before detection: _prev_state={'exists' if self._prev_state is not None else 'None'}, _stuck_counter={self._stuck_counter}")
+        events, self._stuck_counter = detect_environment_events(
+            state, self._prev_state, self._stuck_counter, self.agent_index
+        )
+        print(f"[EVENT_CHECK] After detection: events={events}, _stuck_counter={self._stuck_counter}")
+        
+        # If events detected and we have a matching pattern, trigger proactive intervention
+        if events and not self.use_baseline:
+            # Check for matching intervention patterns
+            patterns = self.memory.semantic.get("intervention_patterns", [])
+            matching = []
+            for p in patterns:
+                p_events = p.get("events_triggered", [])
+                if p_events and all(e in events for e in p_events):
+                    matching.append(p)
+            if matching:
+                best_pattern = matching[-1]  # Most recent
+                if best_pattern.get("low_level_override") and not self.low_level_override:
+                    # Auto-apply the pattern's override
+                    self.low_level_override = best_pattern["low_level_override"]
+                    self.low_level_override_duration = 1  # Apply for 1 step
+                    print(f"✅ Auto-triggered pattern: {best_pattern.get('events_triggered')} → {self.low_level_override}")
 
         # if current ml action does not exist, generate a new one (respect override)
         if self.current_ml_action is None:
-            self.current_ml_action = self.generate_ml_action(state)
+            self.current_ml_action = self.generate_ml_action(state, events=events)
 
         # if the current ml action is in process, Player{self.agent_index} done, else generate a new one
         if self.current_ml_action_steps > 0:
             current_ml_action_done = self.check_current_ml_action_done(state)
             if current_ml_action_done:
                 # generate a new ml action
-                self.current_ml_action = self.generate_ml_action(state)
+                self.current_ml_action = self.generate_ml_action(state, events=events)
 
         count = 0
         while not self.validate_current_ml_action(state):
-            self.current_ml_action = self.generate_ml_action(state)
+            self.current_ml_action = self.generate_ml_action(state, events=events)
             
             count += 1
             if count > 3:
                 self.current_ml_action = "wait(1)"
                 self.time_to_wait = 1
-
-        # Update stall counter once per tick (compute simple distance to subgoal + position check)
-        player = state.players[self.agent_index]
-        try:
-            # Check position-based stall (same position for multiple ticks)
-            current_pos = tuple(player.position)
-            if not hasattr(self, '_position_history'):
-                self._position_history = []
-            self._position_history.append(current_pos)
-            if len(self._position_history) > 3:
-                self._position_history = self._position_history[-3:]
-            
-            # Check if stuck in same position
-            position_stuck = len(self._position_history) >= 2 and len(set(self._position_history[-2:])) == 1
-            
-            motion_goals = self.find_motion_goals(state)
-            if motion_goals:
-                # Simple distance: Manhattan distance to nearest goal
-                min_dist = min(
-                    abs(mg[0][0] - player.position[0]) + abs(mg[0][1] - player.position[1])
-                    for mg in motion_goals
-                )
-            else:
-                min_dist = 0
-            subgoal_dist_now = min_dist
-            subgoal_dist_prev = self._prev_subgoal_distance if self._prev_subgoal_distance is not None else subgoal_dist_now
-            
-            # Update stall counter based on distance
-            self.update_stall_counter(subgoal_dist_prev, subgoal_dist_now)
-            
-            # Also check if position hasn't changed (alternative stall signal)
-            # If position stuck AND distance not improving, ensure stall counter is high enough
-            if position_stuck and subgoal_dist_now >= subgoal_dist_prev and subgoal_dist_now > 0:
-                self._stall_ticks = max(self._stall_ticks, 2)
-            
-            # Reset stall counter if position changed (clear progress signal)
-            if not position_stuck:
-                # Position changed - this is progress, so reduce stall count
-                if self._stall_ticks > 0:
-                    self._stall_ticks = max(0, self._stall_ticks - 1)
-            
-            self._prev_subgoal_distance = subgoal_dist_now
-            stall_count = self.stalled_ticks()
-            if stall_count >= 2:
-                print(f"[Stall] Detected stall: ticks={stall_count}, dist_prev={subgoal_dist_prev:.1f}, dist_now={subgoal_dist_now:.1f}, pos_stuck={position_stuck}, pos={current_pos}")
-        except Exception as e:
-            print(f"[Stall] Error in stall detection: {e}")
-            import traceback
-            traceback.print_exc()
-
-        # Write a card when human fix succeeds (progress resumed within 5 ticks)
-        # DISABLED in baseline mode (no memory/cards)
-        if (not self.use_baseline and
-            self._last_human_intervention_tick is not None and 
-            self._last_human_intervention_action and 
-            self.current_timestep - self._last_human_intervention_tick <= 5 and
-            self.stalled_ticks() == 0):  # Success: no longer stalled
-            ctx = {
-                "tick": self._last_human_intervention_tick,
-                "mini_trace": getattr(self, "recent_trace", ""),
-            }
-            # Convert action to egocentric if needed
-            action_map = {
-                "move_north": "FORWARD", "move_south": "BACK", 
-                "move_east": "RIGHT", "move_west": "LEFT"
-            }
-            ego_action = action_map.get(self._last_human_intervention_action, "BACK")
-            human_text = self._last_human_intervention_text or ""
-            card = make_card_from_success(ctx, chosen_action=ego_action, human_text=human_text)
-            self.memory.add_intervention_card(card)
-            print(f"[Cards] ✅ Learned {card['id']} from human intervention at tick {self._last_human_intervention_tick}")
-            print(f"[Cards]    Title: {card['title']}")
-            print(f"[Cards]    Human said: '{human_text}'")
-            print(f"[Cards]    When: {card['when_text']}")
-            print(f"[Cards]    Action: {card['action_text']}")
-            print(f"[Cards]    Total cards in memory: {len(self.memory.semantic.get('playbook_cards', []))}")
-            # Reset tracking
-            self._last_human_intervention_tick = None
-            self._last_human_intervention_action = None
-            self._last_human_intervention_text = None
-
-        # Try auto "Match→Apply" BEFORE normal low-level controller
-        # ONLY trigger when agent is stalled (stuck/deadlock situation)
-        # Cooldown is only used to prevent spam when making progress
-        # DISABLED in baseline mode (no memory/cards)
-        reflex = None
-        if not self.use_baseline:
-            cooldown_until = self._cooldowns.get("cards", 0)
-            stall_count = self.stalled_ticks()
-            
-            # ONLY try Match→Apply if agent is stalled (stuck/deadlock)
-            if stall_count >= 2:
-                # Agent is stalled - try Match→Apply (cooldown will reset if action helps)
-                if self.current_timestep < cooldown_until:
-                    print(f"[Match→Apply] ⚠️ Overriding cooldown (agent stalled: {stall_count} ticks)")
-                print(f"[Match→Apply] Attempting auto-unstuck at tick {self.current_timestep} (cooldown until {cooldown_until}, stalled={stall_count})")
-                reflex = self.maybe_auto_unstuck()
-                if reflex is not None:
-                    print(f"[Match→Apply] ✅ Auto-unstuck triggered!")
-                else:
-                    print(f"[Match→Apply] ❌ Auto-unstuck returned None")
-            else:
-                # Agent is NOT stalled - skip Match→Apply entirely
-                if self.current_timestep < cooldown_until:
-                    print(f"[Match→Apply] ⏸️ Skipping (not stalled: {stall_count}, cooldown until {cooldown_until})")
-                # No log needed if cooldown expired and not stalled - agent is making progress normally
-        
-        if reflex is not None:
-            # Apply the reflex action
-            ego_dir = reflex.get("low_level_override")
-            if ego_dir and ego_dir in {"LEFT","RIGHT","BACK","WAIT"}:
-                chosen_action = self._egocentric_to_action(ego_dir, player)
-                if chosen_action:
-                    print(f"[Match→Apply] Auto-unstuck: {ego_dir} -> {chosen_action}")
-                    # Keep current ML plan as specified
-                    self.current_ml_action = reflex.get("steps", [self.current_ml_action])[0] if reflex.get("steps") else self.current_ml_action
-                    # Skip normal action selection and return immediately
-                    self.prev_state = state
-                    self.current_ml_action_steps += 1
-                    if pkg_resources.get_distribution("overcooked_ai").version == '1.1.0':
-                        self._append_history_tick(state, chosen_action)
-                        return chosen_action, {}
-                    else:
-                        self._append_history_tick(state, chosen_action)
-                        return chosen_action
 
         # Check for low-level override first (before any other logic)
         if self.low_level_override and self.low_level_override_duration > 0:
@@ -1181,51 +827,9 @@ class ProAgentWithIntervention:
             except Exception:
                 pass
 
-        # Handle version-specific return format
-        if pkg_resources.get_distribution("overcooked_ai").version == '1.1.0':
-            self.prev_state = state
-            result = chosen_action, {}
-        elif pkg_resources.get_distribution("overcooked_ai").version == '0.0.1':
-            self.prev_state = state
-            result = chosen_action
-
-        if self.auto_unstuck and chosen_action != Action.INTERACT:
-            if (
-                    self.prev_state is not None
-                    and state.players
-                    == self.prev_state.players
-            ):
-                if self.agent_index == 0:
-                    joint_actions = list(
-                        itertools.product(Action.ALL_ACTIONS, [Action.STAY])
-                    )
-                elif self.agent_index == 1:
-                    joint_actions = list(
-                        itertools.product([Action.STAY], Action.ALL_ACTIONS)
-                    )
-                else:
-                    raise ValueError("Player index not recognized")
-
-                unblocking_joint_actions = []
-                for j_a in joint_actions:
-                    if j_a != [Action.INTERACT,Action.STAY] and  j_a != [Action.STAY,Action.INTERACT]:
-                        # Support both shared mdp (returns 2) and legacy (returns 3)
-                        _res = self.mlam.mdp.get_state_transition(state, j_a)
-                        if isinstance(_res, tuple) and len(_res) == 3:
-                            new_state, _, _ = _res
-                        else:
-                            new_state, _ = _res
-                        if (
-                                new_state.players_pos_and_or
-                                != self.prev_state.players_pos_and_or
-                            ):
-                            unblocking_joint_actions.append(j_a)
-                unblocking_joint_actions.append([Action.STAY, Action.STAY])
-                chosen_action = unblocking_joint_actions[
-                    np.random.choice(len(unblocking_joint_actions))
-                ][self.agent_index]
-
+        # Version 0.0.1: return single action (not tuple)
         self.prev_state = state
+        result = chosen_action
         if chosen_action is None:
             self.current_ml_action = "wait(1)"
             self.time_to_wait = 1
@@ -1235,12 +839,14 @@ class ProAgentWithIntervention:
         print(f"[DBG] return chosen_action={chosen_action} type={type(chosen_action)}")
         
         # Track history for interpreter
-        self._append_history_tick(state, chosen_action)
+        # DISABLED: _append_history_tick and _infer_teammate_action disabled for testing
+        # self._append_history_tick(state, chosen_action)
         
-        if pkg_resources.get_distribution("overcooked_ai").version == '1.1.0':
-            return chosen_action, {}
-        elif pkg_resources.get_distribution("overcooked_ai").version == '0.0.1':
-            return chosen_action
+        # Update previous state for event detection (store reference for next step)
+        self._prev_state = state
+        
+        # Version 0.0.1: return single action (not tuple)
+        return chosen_action
     
     def _append_history_tick(self, state, action):
         """Append action to recent history for interpreter, including teammate actions."""
@@ -1339,14 +945,12 @@ class ProAgentWithIntervention:
             self.memory = AgentMemory(mdp=self.mdp)
         self._human_inbox.clear()
         self._recent_history.clear()
-        # Reset stall tracking
-        self._stall_ticks = 0
-        self._prev_subgoal_distance = None
-        self._cooldowns = {}
         self._last_human_intervention_tick = None
         self._last_human_intervention_action = None
         self._last_human_intervention_text = None
-        self._position_history = []
+        # Reset event detection state
+        self._prev_state = None
+        self._stuck_counter = 0
     def set_agent_index(self, agent_index):
         """Set the agent index."""
         self.agent_index = agent_index

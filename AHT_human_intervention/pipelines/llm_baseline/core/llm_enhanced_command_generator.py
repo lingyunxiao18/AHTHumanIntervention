@@ -389,8 +389,8 @@ Generate only the commands, one per line, without numbering or bullet points.
                         {"role": "system", "content": f"You are an expert in generating natural language commands for human-AI interaction in cooking games. Your generated commands must be VERY SIMILAR to the examples provided in the prompt - they should follow the exact same language style, tone, sentence structure, and approach. Generate commands that could easily be mixed in with the examples without anyone noticing they were generated separately. Match BOTH the trigger context (agent correction vs environmental awareness vs teammate coordination) AND the intervention type (direct command vs factual information vs general instruction). Use ONLY valid Overcooked actions: move, interact, stay. Do NOT include invalid actions like chopping, stirring, carrying pots, cleaning, etc."},
                         {"role": "user", "content": prompt}
                     ],
-                    max_tokens=1000,
-                    temperature=0.9
+                    max_completion_tokens=1000,
+                    temperature=0.9,
                 )
                 
                 commands = response.choices[0].message.content.strip().split('\n')

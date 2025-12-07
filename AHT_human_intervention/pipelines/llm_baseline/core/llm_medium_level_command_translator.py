@@ -185,7 +185,7 @@ Example responses:
                     {"role": "user", "content": full_prompt}
                 ],
                 temperature=0.1,
-                max_tokens=200
+                max_completion_tokens=200,
             )
             
             # Parse response

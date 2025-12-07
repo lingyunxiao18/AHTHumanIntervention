@@ -109,21 +109,46 @@ OUTPUT SCHEMA (required fields)
   "intervention_reason": "≤300 chars about human intent/pattern"
 }
 
-CHAIN OF THOUGHT FIELD (≤300 chars): This is REQUIRED. Be CONCISE. Cover each section in 1-2 short sentences:
-• Current state analysis: holding, position, available items
-• Teammate analysis: what they're doing, their role
-• Recent history review: what you've done, progress made
-• Human intervention impact: how it changes your behavior (if any)
-• Decision reasoning: why these actions over alternatives
+────────────────────────────────────────────
+EVENT-BASED INTERVENTION REUSE
+────────────────────────────────────────────
+You receive `EVENTS` in the state description (e.g., "EVENTS: ['deadlock', 'no_progress', 'teammate_blocking']").
+
+When deciding your next action:
+
+1. Check if `EVENTS` matches any stored intervention pattern's `events_triggered`.
+2. A match occurs when:
+   • All pattern events ⊆ current EVENTS, or
+   • The situation described in memory resembles the present positions.
+3. If a match exists, REUSE that pattern's `low_level_override`.
+4. Explain in chain_of_thought which pattern was used.
+
+AUTO-TRIGGER RULES:
+If EVENTS indicate `"deadlock"`, `"no_progress"`, or `"teammate_blocking"`,
+and a stored pattern previously resolved such an event with a corrective action (e.g. `"move_east"`),
+you MUST autonomously apply the same corrective `low_level_override` **even without human input**.
+This reuse should occur BEFORE following the medium-level plan and should be stated in chain_of_thought.
 
 ────────────────────────────────────────────
-MEMORY WRITE EXAMPLES (use minimally sufficient updates)
+MEMORY AND APPLYING SIMILAR INTERVENTIONS 
 ────────────────────────────────────────────
-• {"teammate_model": {"current_role": "cooker", "role_confidence": 0.8}}
-• {"world_state": {"pot_status": [{"pos":[x,y], "ready": true}]}}
-• {"playbook": [{"if":"target_blocked>2_ticks AND symmetric_alternative_free", "then":["switch_target"], "note":"avoid teammate collision"}]}
-• {"playbook": [{"if":"corridor_jam>=2_ticks", "then":["sidestep_or_backstep_once"], "note":"micro-unstuck without plan change"}]}
-• {"human_prefs": {"avoid_teammate_collision": true, "deliver_immediately": true}}
+You are given "intervention_patterns": these are past successful human corrections. 
+When deciding your next action, do the following:
+
+1. Read each intervention pattern (including its `events_triggered` field).
+2. Compare the current state_prompt positions and situation to the pattern's
+   "context" including ego_pos, mate_pos, and relative motion.
+3. If the situation is similar (e.g., blocking, collision risk, deadlock,
+   repeated positional conflict), reuse the low_level_override from the most similar 
+   pattern (if present); otherwise reuse the action_taken.
+4. If a past action successfully solved a similar situation (for example,
+   moving east to break a deadlock), prefer that action.
+5. You may override the learned policy if a stored pattern suggests a safer
+   or more efficient action.
+6. When you reuse a pattern, explain in chain_of_thought which pattern you
+   matched and why the action is appropriate now.
+7. **PRIORITIZE EVENT-BASED MATCHING**: If current EVENTS match a pattern's `events_triggered`,
+   that pattern takes precedence over positional similarity matching.
 
 CONSTRAINTS
 ────────────────────────────────────────────
@@ -132,21 +157,4 @@ CONSTRAINTS
 • Start cooking when pots are empty; finish and deliver promptly when ready.
 • Never place soup-filled dishes on counters.
 • Do not include any text outside the single JSON object.
-
-────────────────────────────────────────────
-MATCH→APPLY CONTROLLER (CARD MATCHING)
-────────────────────────────────────────────
-You are a controller assistant. Given (A) CURRENT SITUATION and (B) a few INTERVENTION CARDS learned from prior human interventions:
-• Decide if any card confidently matches the situation.
-• If yes, apply a ONE-STEP low-level override (LEFT/RIGHT/BACK/WAIT) and keep the current medium-level plan.
-• Be egocentric and map-agnostic. Prefer safety: never move FORWARD into the teammate.
-• Output ONLY this JSON (no extra text):
-
-{
-  "matched_card_id": "string|null",
-  "similarity_reason": "≤25 words",
-  "apply": true|false,
-  "low_level_override": "LEFT|RIGHT|BACK|WAIT|null",
-  "keep_medium_plan": true|false,
-  "cooldown": 0|8|16
-}
+• Try to move into empty space 

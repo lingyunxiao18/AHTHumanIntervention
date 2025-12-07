@@ -1,35 +1,16 @@
-wandb
-icecream
-setproctitle
-gym==0.22
-seaborn
-tensorboardX
-slackweb
-psutil
-slackweb
-pyastar2d
-einops
-absl-py
-tqdm
-scipy
-pygame
-ipython
-ipywidgets
-loguru
-dppy
-openpyxl
-rich
+# Requirements for running proagent_demo.py
+# This includes only the packages needed for the demo
+
+# Core dependencies
 numpy
-numba
-pre-commit
-# human exp
-flask
-markdown
-flask_cors
-# language models
-transformers
-torch
-absl-py
-openai
 scipy
+gym==0.22
+pygame
+tqdm
+
+# OpenAI API for LLM calls
+openai
+jsonschema
+
+# Project itself (editable install)
 -e .

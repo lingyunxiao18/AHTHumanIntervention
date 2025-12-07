@@ -87,12 +87,31 @@ def main():
     env = OvercookedEnv(mdp, start_state_fn=start_fn, horizon=args.horizon)
     env.reset()
 
-	# Agents: Player0 = ProAgentWithIntervention, Player1 = OnionSpecialistAgent
+    # Agents: Player0 = ProAgentWithIntervention, Player1 = OnionSpecialistAgent
     # Create base ProAgent first to get MLAM, then wrap with intervention
-    base_agent = pro_utils.make_agent('ProAgent', mdp, layout, model='gpt-4.1-mini', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=False)
+    base_agent = pro_utils.make_agent(
+        'ProAgent',
+        mdp,
+        layout,
+        model='gpt-5-mini',
+        retrival_method='recent_k',
+        K=10,
+        prompt_level='l2-ap',
+        belief_revision=True,
+        auto_unstuck=False,
+    )
     
     # Create ProAgentWithIntervention using the same MLAM
-    p0 = ProAgentWithIntervention(base_agent.mlam, layout, model='gpt-4.1-mini', retrival_method='recent_k', K=10, prompt_level='l2-ap', belief_revision=True, auto_unstuck=False)
+    p0 = ProAgentWithIntervention(
+        base_agent.mlam,
+        layout,
+        model='gpt-5-mini',
+        retrival_method='recent_k',
+        K=10,
+        prompt_level='l2-ap',
+        belief_revision=True,
+        auto_unstuck=False,
+    )
 
     # Map teammate argument to agent constructors
     teammate_key = (args.teammate or 'onion_specialist').strip().lower()
@@ -266,16 +285,20 @@ def main():
                                 memory = p0.memory
                                 print(f"   Semantic entries: {len(memory.semantic)}")
                                 print(f"   Episodic entries: {len(memory.episodic)}")
-                                if hasattr(memory, 'facts'):
-                                    print(f"   Facts: {len(memory.facts)}")
-                                print(f"   Memory view: {memory.prompt_view()[:200]}...")
-                                # Print detailed memory contents
-                                memory.debug_print_memory()
+                                view = memory.prompt_view()
+                                print(f"   Memory view keys: {list(view.keys())}")
+                                print(f"   Last 3 episodic entries:")
+                                for i, entry in enumerate(memory.episodic[-3:]):
+                                    print(f"     {i}: {entry}")
+                                print(f"   Teammate model: {memory.semantic.get('teammate_model', {})}")
+                                print(f"   Intervention patterns: {len(memory.semantic.get('intervention_patterns', []))}")
                             else:
                                 print("   No memory object found")
                             print("")
                         except Exception as e:
                             print(f"❌ Memory debug error: {e}")
+                            import traceback
+                            traceback.print_exc()
 
         if not paused and not intervention_mode:
             # Query agents
@@ -410,9 +433,6 @@ def main():
                 if tag == 'TMODEL':
                     wrapped_lines.extend(wrap_two_lines('Teammate Model: ', content, font, text_panel_width))
                     continue
-                if tag == 'RATIONAL':
-                    wrapped_lines.extend(wrap_two_lines('Rationale: ', content, font, text_panel_width))
-                    continue
                 if tag == 'INTERVENTION_REASON':
                     wrapped_lines.extend(wrap_two_lines('Intervention Reason: ', content, font, text_panel_width))
                     continue
@@ -421,9 +441,6 @@ def main():
                     continue
                 if tag == 'INTERVENTION':   
                     wrapped_lines.extend(wrap_two_lines('Intervention: ', content, font, text_panel_width))
-                    continue
-                if tag == 'MEM':
-                    wrapped_lines.extend(wrap_two_lines('Mem: ', content, font, text_panel_width))
                     continue
             wrapped_lines.extend(wrap_text(line if isinstance(line, str) else str(line), font, text_panel_width))
 
