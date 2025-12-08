@@ -119,19 +119,21 @@ class ProAgentWithIntervention:
     
     def __init__(self, mlam, layout, model='gpt-5-mini', 
                  agent_index=None, history_horizon=8, 
-                 use_baseline=False, **kwargs):
+                 enable_cot=True, enable_memory=True, **kwargs):
         """
         Initialize ProAgent with AdvancedLLMInterpreter planner.
         
         Args:
-            use_baseline: If True, use baseline interpreter (no CoT, no memory)
+            enable_cot: If True, enable Chain-of-Thought reasoning (default: True)
+            enable_memory: If True, enable memory module (default: True)
         """
         self.model = model
         self.mlam = mlam
         self.layout = layout
         self.mdp = self.mlam.mdp
         self.agent_index = agent_index
-        self.use_baseline = use_baseline
+        self.enable_cot = enable_cot
+        self.enable_memory = enable_memory
         
         # OpenAI API key handling
         self.openai_api_keys = []
@@ -161,39 +163,18 @@ class ProAgentWithIntervention:
         # Initialize OpenAI client with API key loaded via openai_key.txt/env
         self.llm_client = LLMClient(openai_client=OpenAI(api_key=self.openai_api_key()), model=model)
         
-        if use_baseline:
-            # Use baseline interpreter (no CoT, no memory)
-            try:
-                from ..human_intervention.advanced_llm_intervention_baseline import (
-                    BaselineLLMInterpreter,
-                    HumanMessage as BaselineHumanMessage
-                )
-            except ImportError:
-                intervention_path = os.path.join(PROJECT_ROOT, 'proagent', 'src', 'human_intervention')
-                if intervention_path not in sys.path:
-                    sys.path.append(intervention_path)
-                from advanced_llm_intervention_baseline import (
-                    BaselineLLMInterpreter,
-                    HumanMessage as BaselineHumanMessage
-                )
-            
-            # Create minimal memory (not used, but kept for compatibility)
-            self.memory = AgentMemory(mdp=self.mdp)
-            self.interpreter = BaselineLLMInterpreter(
-                self.llm_client,
-                memory=None,  # Not used in baseline
-                history_horizon=history_horizon
-            )
-            print(f"🤖 ProAgentWithIntervention initialized with BASELINE interpreter (CoT and memory DISABLED)")
-        else:
-            # Use full interpreter (CoT + Memory)
-            self.memory = AgentMemory(mdp=self.mdp)
-            self.interpreter = AdvancedLLMInterpreter(
-                self.llm_client, 
-                self.memory, 
-                history_horizon=history_horizon
-            )
-            print(f"🤖 ProAgentWithIntervention initialized with interpreter-based planner")
+        # Always use AdvancedLLMInterpreter (it handles CoT and memory flags internally)
+        self.memory = AgentMemory(mdp=self.mdp)
+        self.interpreter = AdvancedLLMInterpreter(
+            self.llm_client, 
+            self.memory, 
+            history_horizon=history_horizon,
+            enable_cot=enable_cot,
+            enable_memory=enable_memory
+        )
+        cot_status = "ENABLED" if enable_cot else "DISABLED"
+        mem_status = "ENABLED" if enable_memory else "DISABLED"
+        print(f"🤖 ProAgentWithIntervention initialized (CoT: {cot_status}, Memory: {mem_status})")
         
         # Human intervention tracking
         self._human_inbox: List[str] = []
@@ -342,24 +323,13 @@ class ProAgentWithIntervention:
         # Get recent history with teammate actions
         recent_history = self._recent_history[-self.history_horizon:]
         
-        # Get human intervention if available (baseline mode: always empty)
-        if self.use_baseline:
-            human_text = ""  # No interventions in baseline mode
-        else:
-            human_text = self._human_inbox.pop(0) if self._human_inbox else ""
+        # Get human intervention if available (interventions work with any config)
+        human_text = self._human_inbox.pop(0) if self._human_inbox else ""
         
         # Create human message
-        if self.use_baseline:
-            # Use baseline HumanMessage
-            try:
-                from ..human_intervention.advanced_llm_intervention_baseline import HumanMessage as BaselineHumanMessage
-            except ImportError:
-                from advanced_llm_intervention_baseline import HumanMessage as BaselineHumanMessage
-            hm = BaselineHumanMessage(t=getattr(state, "timestep", 0), text="")
-        else:
-            hm = HumanMessage(t=getattr(state, "timestep", 0), text=human_text or "")
-            if hm.text.strip():
-                print(f"[HUMAN] Consuming intervention at t={hm.t}: '{hm.text}'")
+        hm = HumanMessage(t=getattr(state, "timestep", 0), text=human_text or "")
+        if hm.text.strip():
+            print(f"[HUMAN] Consuming intervention at t={hm.t}: '{hm.text}'")
         
         try:
             # Get plan from interpreter (pass state, agent_index, and events for intervention recording)
@@ -372,18 +342,18 @@ class ProAgentWithIntervention:
                 }
                 self.last_plan_category = getattr(plan, 'category', None)
                 self.last_intervention_reason = getattr(plan, 'intervention_reason', None)
-                self.last_chain_of_thought = getattr(plan, 'chain_of_thought', None) if not self.use_baseline else ""
-                if not self.use_baseline:
+                self.last_chain_of_thought = getattr(plan, 'chain_of_thought', None) if self.enable_cot else ""
+                if self.enable_cot or self.enable_memory:
                     print(f"[INTP] category={self.last_plan_category} steps={self.last_plan.get('steps')} intervention_reason={self.last_intervention_reason}")
                     if self.last_chain_of_thought:
                         print(f"[INTP] CoT: {self.last_chain_of_thought}")
                 else:
-                    print(f"[BASELINE] steps={self.last_plan.get('steps')}")
+                    print(f"[INTP] steps={self.last_plan.get('steps')}")
             except Exception:
                 pass
             
-            # Record a memory event when a new plan is computed (skip in baseline mode)
-            if not self.use_baseline:
+            # Record a memory event when a new plan is computed (skip if memory disabled)
+            if self.enable_memory:
                 try:
                     t = int(getattr(state, 'timestep', 0))
                     self.memory.write_events([
@@ -747,7 +717,7 @@ class ProAgentWithIntervention:
         print(f"[EVENT_CHECK] After detection: events={events}, _stuck_counter={self._stuck_counter}")
         
         # If events detected and we have a matching pattern, trigger proactive intervention
-        if events and not self.use_baseline:
+        if events and self.enable_memory:
             # Check for matching intervention patterns
             patterns = self.memory.semantic.get("intervention_patterns", [])
             matching = []
@@ -941,7 +911,7 @@ class ProAgentWithIntervention:
         self.current_timestep = 0
         self.low_level_override = None
         self.low_level_override_duration = 0
-        if not self.use_baseline:
+        if self.enable_memory:
             self.memory = AgentMemory(mdp=self.mdp)
         self._human_inbox.clear()
         self._recent_history.clear()

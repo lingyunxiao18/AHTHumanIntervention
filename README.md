@@ -124,6 +124,25 @@ python proagent_demo.py --random_start
 
 By default, players start at fixed positions defined by the layout.
 
+#### Ablation Study Options
+
+Control the Chain-of-Thought (CoT) reasoning and memory modules for ablation studies:
+
+**Disable Chain-of-Thought reasoning:**
+```bash
+python proagent_demo.py --no_cot
+```
+
+**Disable Memory module:**
+```bash
+python proagent_demo.py --no_memory
+```
+
+**Disable both (Baseline mode):**
+```bash
+python proagent_demo.py --no_cot --no_memory
+```
+
 ### Example Commands
 
 **Basic run with defaults:**
@@ -144,6 +163,18 @@ python proagent_demo.py --layout coordination_ring --teammate greedy --horizon 5
 **Using direct layout name:**
 ```bash
 python proagent_demo.py --layout_name random3 --teammate onion_specialist --horizon 300
+```
+
+**Ablation study examples:**
+```bash
+# Baseline mode (no CoT, no memory)
+python proagent_demo.py --no_cot --no_memory --layout counter_circuit
+
+# CoT only (reasoning without memory)
+python proagent_demo.py --no_memory --layout counter_circuit
+
+# Memory only (no explicit reasoning display)
+python proagent_demo.py --no_cot --layout counter_circuit
 ```
 
 ## Step 4: Game Controls

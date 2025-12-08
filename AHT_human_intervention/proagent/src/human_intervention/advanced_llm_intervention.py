@@ -426,6 +426,33 @@ PLAN_JSON_SCHEMA: Dict[str, Any] = {
     }
 }
 
+def _get_plan_json_schema(enable_cot: bool = True, enable_memory: bool = True) -> Dict[str, Any]:
+	"""
+	Generate JSON schema based on enabled features.
+	
+	Args:
+		enable_cot: Whether to require chain_of_thought
+		enable_memory: Whether to include memory_writes
+		
+	Returns:
+		Modified JSON schema dictionary
+	"""
+	import copy
+	schema = copy.deepcopy(PLAN_JSON_SCHEMA)
+	required_fields = ["steps", "category", "teammate_behavior"]
+	
+	# Add chain_of_thought to required only if CoT is enabled
+	if enable_cot:
+		required_fields.append("chain_of_thought")
+	
+	schema["required"] = required_fields
+	
+	# Remove memory_writes from properties if memory is disabled
+	if not enable_memory:
+		schema["properties"].pop("memory_writes", None)
+	
+	return schema
+
 def _load_system_rules() -> str:
 	"""Load system rules from external file."""
 	script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -442,6 +469,65 @@ def _load_system_rules() -> str:
 
 SYSTEM_RULES = _load_system_rules()
 
+def _get_system_rules(enable_cot: bool = True, enable_memory: bool = True) -> str:
+	"""
+	Generate system rules based on enabled features.
+	
+	Args:
+		enable_cot: Whether to include chain-of-thought instructions
+		enable_memory: Whether to include memory-related instructions
+		
+	Returns:
+		Modified system rules string
+	"""
+	base_rules = SYSTEM_RULES
+	
+	# If both are enabled, return full rules
+	if enable_cot and enable_memory:
+		return base_rules
+	
+	result = base_rules
+	
+	# Remove CoT section if disabled
+	if not enable_cot:
+		# Remove the entire THINK (CHAIN OF THOUGHT) section
+		import re
+		# Match from "THINK (CHAIN OF THOUGHT" to and including "OUTPUT:", replace with just "OUTPUT:"
+		cot_pattern = r'THINK \(CHAIN OF THOUGHT.*?\nOUTPUT:'
+		result = re.sub(cot_pattern, 'OUTPUT:', result, flags=re.DOTALL)
+		
+		# Update schema description to indicate CoT is empty
+		result = re.sub(r'"chain_of_thought":\s*"[^"]*"', '"chain_of_thought": ""', result)
+		result = result.replace(
+			'"chain_of_thought": "Your complete reasoning from THINK section above (be explicit and structured)",',
+			'"chain_of_thought": "",  // Empty when CoT is disabled'
+		)
+	
+	# Remove memory-related sections if disabled
+	if not enable_memory:
+		# Remove memory_view from INPUTS
+		result = re.sub(r'\(c\)\s*memory_view[^\n]*\n?', '', result)
+		
+		# Remove EVENT-BASED INTERVENTION REUSE section
+		event_pattern = r'────────────────────────────────────────────\nEVENT-BASED INTERVENTION REUSE.*?(?=────────────────────────────────────────────|CONSTRAINTS)'
+		result = re.sub(event_pattern, '', result, flags=re.DOTALL)
+		
+		# Remove MEMORY AND APPLYING SIMILAR INTERVENTIONS section
+		memory_pattern = r'────────────────────────────────────────────\nMEMORY AND APPLYING SIMILAR INTERVENTIONS.*?(?=────────────────────────────────────────────|CONSTRAINTS)'
+		result = re.sub(memory_pattern, '', result, flags=re.DOTALL)
+		
+		# Remove memory_writes from schema
+		result = re.sub(r'"memory_writes":\s*\[[^\]]*\],?\s*//.*?\n?', '', result)
+		result = result.replace('"memory_writes": [ ... ],                                    // optional structured updates', '')
+		
+		# Update teammate_behavior description to not mention memory_view
+		result = result.replace(
+			'summarizing the teammate\'s recent role and pattern using `memory_view` and `recent_history`.',
+			'summarizing the teammate\'s recent role and pattern using `recent_history`.'
+		)
+	
+	return result
+
 class AdvancedLLMInterpreter:
 	"""
 	CoT + Memory interpreter.
@@ -449,10 +535,13 @@ class AdvancedLLMInterpreter:
 	- call LLM in JSON mode
 	- return Plan + apply memory_writes (gated) to AgentMemory
 	"""
-	def __init__(self, llm: LLMClient, memory: AgentMemory, history_horizon: int = 8):
+	def __init__(self, llm: LLMClient, memory: AgentMemory, history_horizon: int = 8, 
+	             enable_cot: bool = True, enable_memory: bool = True):
 		self.llm = llm
 		self.memory = memory
 		self.history_horizon = history_horizon
+		self.enable_cot = enable_cot
+		self.enable_memory = enable_memory
 	
 	def _record_human_intervention(self, human_msg: HumanMessage, state, agent_index: int, events=None):
 		"""Record human intervention with complete state information."""
@@ -506,7 +595,7 @@ class AdvancedLLMInterpreter:
 
 	def _store_intervention_pattern(self, plan: Plan, human_msg: HumanMessage, state=None, events=None) -> None:
 		"""Store intervention pattern in memory for future learning."""
-		if not plan.intervention_reason or state is None:
+		if not self.enable_memory or not plan.intervention_reason or state is None:
 			return
 		
 		try:
@@ -561,8 +650,8 @@ class AdvancedLLMInterpreter:
 		agent_index=None,  # Add agent_index for intervention recording
 		events=None,  # Add events parameter for event-based triggers
 	) -> Plan:
-		# Record intervention with complete state information if human message exists
-		if human_msg.text.strip() and state is not None and agent_index is not None:
+		# Record intervention with complete state information if human message exists and memory is enabled
+		if self.enable_memory and human_msg.text.strip() and state is not None and agent_index is not None:
 			self._record_human_intervention(human_msg, state, agent_index, events=events)
 		
 		# Extract events from state_prompt if not provided directly
@@ -579,18 +668,22 @@ class AdvancedLLMInterpreter:
 		user_payload = {
 			"state_prompt": state_prompt,
 			"recent_history": recent_history[-self.history_horizon:],
-			"memory_view": self.memory.prompt_view(),
 			"human_message": {
 				"t": human_msg.t,
 				"text": human_msg.text,
 			},
 			"user_events": events,  # Add events to payload
 		}
+		
+		# Conditionally include memory_view if memory is enabled
+		if self.enable_memory:
+			user_payload["memory_view"] = self.memory.prompt_view()
 
 		# Optional: Automatic pattern matching for event-based triggers
 		# Pre-fill low_level_override if a matching pattern is found (gives LLM a hint)
+		# Only works if memory is enabled
 		matching_pattern = None
-		if events:
+		if self.enable_memory and events:
 			patterns = self.memory.semantic.get("intervention_patterns", [])
 			matching = []
 			for p in patterns:
@@ -605,8 +698,14 @@ class AdvancedLLMInterpreter:
 					# Pre-fill the override as a hint (LLM can still override if needed)
 					print(f"🔍 Auto-matched pattern: {matching_pattern.get('events_triggered')} → {matching_pattern.get('low_level_override')}")
 
+		# Get system rules based on enabled features
+		system_rules = _get_system_rules(enable_cot=self.enable_cot, enable_memory=self.enable_memory)
+		
+		# Get JSON schema based on enabled features
+		schema = _get_plan_json_schema(enable_cot=self.enable_cot, enable_memory=self.enable_memory)
+		
 		# Use LLM for all interventions - it will detect low-level commands through reasoning
-		raw = self.llm.respond_json(PLAN_JSON_SCHEMA, SYSTEM_RULES, user_payload)
+		raw = self.llm.respond_json(schema, system_rules, user_payload)
 		
 		# If no human intervention and we have a matching pattern, apply the override automatically
 		if not human_msg.text.strip() and matching_pattern and matching_pattern.get("low_level_override"):
@@ -627,15 +726,22 @@ class AdvancedLLMInterpreter:
 		if not category or category.strip() == "":
 			category = "vague"
 		
-		chain_of_thought_raw = str(raw.get("chain_of_thought", ""))
-		chain_of_thought = chain_of_thought_raw[:2048] if chain_of_thought_raw else "No chain of thought provided"
+		# Conditionally set chain_of_thought based on enable_cot
+		if self.enable_cot:
+			chain_of_thought_raw = str(raw.get("chain_of_thought", ""))
+			chain_of_thought = chain_of_thought_raw[:2048] if chain_of_thought_raw else "No chain of thought provided"
+		else:
+			chain_of_thought = ""  # Empty CoT when disabled
+		
+		# Conditionally include memory_writes based on enable_memory
+		memory_writes = raw.get("memory_writes", []) if self.enable_memory else []
 		
 		plan = Plan(
 			steps=validated_steps,
 			chain_of_thought=chain_of_thought,
 			category=category,
 			teammate_behavior=str(raw.get("teammate_behavior", ""))[:220],
-			memory_writes=raw.get("memory_writes", []),
+			memory_writes=memory_writes,
 			low_level_override=raw.get("low_level_override"),
 			intervention_reason=str(raw.get("intervention_reason", ""))[:300],
 		)
@@ -647,33 +753,35 @@ class AdvancedLLMInterpreter:
 		if not plan.steps:
 			plan.steps = ["wait(1)"]
 
-		# NEW: ingest LLM-authored teammate behavior (if present)
-		tb = (raw.get("teammate_behavior") or "").strip()
-		if tb:
-			plan.memory_writes.append({
-				"teammate_model": {
-					"behavior_description": tb,
-					"since_t": human_msg.t
-				}
-			})
-		
-		safe_patch = self._gate_memory_writes(plan.memory_writes, plan.category)
-		if safe_patch:
-			self.memory.upsert_semantic(safe_patch)
-		# Only write plan event if there's no human intervention (human_intervention type is written by apply_human_intervention)
-		if not human_msg.text.strip():
-			self.memory.write_events([
-				{"t": human_msg.t, "type": "plan", "steps": plan.steps}
-			])
-		else:
-			# For human interventions, update the intervention with corrected action and record plan
-			self.update_intervention_with_corrected_action(plan.steps[0] if plan.steps else "none")
-			self.memory.write_events([
-				{"t": human_msg.t, "type": "plan", "steps": plan.steps, "category": plan.category}
-			])
+		# NEW: ingest LLM-authored teammate behavior (if present and memory enabled)
+		if self.enable_memory:
+			tb = (raw.get("teammate_behavior") or "").strip()
+			if tb:
+				plan.memory_writes.append({
+					"teammate_model": {
+						"behavior_description": tb,
+						"since_t": human_msg.t
+					}
+				})
 			
-			# Store intervention pattern for learning
-			self._store_intervention_pattern(plan, human_msg, state, events=events)
+			safe_patch = self._gate_memory_writes(plan.memory_writes, plan.category)
+			if safe_patch:
+				self.memory.upsert_semantic(safe_patch)
+			
+			# Only write plan event if there's no human intervention (human_intervention type is written by apply_human_intervention)
+			if not human_msg.text.strip():
+				self.memory.write_events([
+					{"t": human_msg.t, "type": "plan", "steps": plan.steps}
+				])
+			else:
+				# For human interventions, update the intervention with corrected action and record plan
+				self.update_intervention_with_corrected_action(plan.steps[0] if plan.steps else "none")
+				self.memory.write_events([
+					{"t": human_msg.t, "type": "plan", "steps": plan.steps, "category": plan.category}
+				])
+				
+				# Store intervention pattern for learning
+				self._store_intervention_pattern(plan, human_msg, state, events=events)
 
 		return plan
 

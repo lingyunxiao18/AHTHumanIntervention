@@ -74,6 +74,16 @@ def main():
         default='onion_specialist',
         help='Teammate agent type: onion_specialist, dish_specialist, greedy, random, stay, hand_coded'
     )
+    parser.add_argument(
+        '--no_cot',
+        action='store_true',
+        help='Disable Chain-of-Thought reasoning (ablation study)'
+    )
+    parser.add_argument(
+        '--no_memory',
+        action='store_true',
+        help='Disable memory module (ablation study)'
+    )
     args = parser.parse_args()
 
     layout = args.layout
@@ -102,6 +112,9 @@ def main():
     )
     
     # Create ProAgentWithIntervention using the same MLAM
+    # Ablation study options: control CoT and memory separately
+    enable_cot = not args.no_cot
+    enable_memory = not args.no_memory
     p0 = ProAgentWithIntervention(
         base_agent.mlam,
         layout,
@@ -111,6 +124,8 @@ def main():
         prompt_level='l2-ap',
         belief_revision=True,
         auto_unstuck=False,
+        enable_cot=enable_cot,
+        enable_memory=enable_memory,
     )
 
     # Map teammate argument to agent constructors
@@ -142,13 +157,15 @@ def main():
     
     # Print helpful information about the new interpreter system
     print("🤖 ProAgentWithIntervention Demo Started")
-    print("📋 New Interpreter Features:")
-    print("   - CoT reasoning with memory")
+    print("📋 Interpreter Configuration:")
+    print(f"   - Chain-of-Thought (CoT): {'ENABLED' if enable_cot else 'DISABLED'}")
+    print(f"   - Memory Module: {'ENABLED' if enable_memory else 'DISABLED'}")
     print("   - Plan categorization (policy/env/teammate/vague)")
-    print("   - Confidence scoring")
     print("   - Structured rationale output")
-    print("   - Memory persistence across interventions")
-    print("   - Explicit Chain-of-Thought display in pygame window")
+    if enable_memory:
+        print("   - Memory persistence across interventions")
+    if enable_cot:
+        print("   - Explicit Chain-of-Thought display in pygame window")
     print("")
     print("🎮 Controls:")
     print("   - SPACE: Pause/Resume")
@@ -278,10 +295,10 @@ def main():
                         pygame.quit()
                         return
                     elif event.key == pygame.K_m:
-                        # Debug: print memory state
+                        # Debug: print memory state (only if memory is enabled)
                         try:
                             print("\n🧠 Agent Memory State:")
-                            if hasattr(p0, 'memory'):
+                            if enable_memory and hasattr(p0, 'memory'):
                                 memory = p0.memory
                                 print(f"   Semantic entries: {len(memory.semantic)}")
                                 print(f"   Episodic entries: {len(memory.episodic)}")
@@ -292,6 +309,8 @@ def main():
                                     print(f"     {i}: {entry}")
                                 print(f"   Teammate model: {memory.semantic.get('teammate_model', {})}")
                                 print(f"   Intervention patterns: {len(memory.semantic.get('intervention_patterns', []))}")
+                            elif not enable_memory:
+                                print("   Memory module is DISABLED (use --no_memory flag)")
                             else:
                                 print("   No memory object found")
                             print("")
@@ -331,9 +350,10 @@ def main():
                 last_intervention_reason = getattr(p0, 'last_intervention_reason', None)
                 if last_intervention_reason:
                     print(f"[STEP {step}] 🎯 Intervention Reason: {last_intervention_reason}")
-                last_chain_of_thought = getattr(p0, 'last_chain_of_thought', None)
-                if last_chain_of_thought:
-                    print(f"[STEP {step}] 🧠 Chain of Thought: {last_chain_of_thought}")
+                if enable_cot:
+                    last_chain_of_thought = getattr(p0, 'last_chain_of_thought', None)
+                    if last_chain_of_thought:
+                        print(f"[STEP {step}] 🧠 Chain of Thought: {last_chain_of_thought}")
                 if last_plan:
                     print(f"[STEP {step}] Interpreter Plan Steps: {last_plan.get('steps', [])}")
                 print(f"[STEP {step}] P0_action_raw={a0}, P0_action_conv={a0_conv}, P0_ml_action={ml}")
@@ -362,6 +382,7 @@ def main():
             f'Step: {step}',
             'Controls: SPACE=pause, P=intervene, M=memory debug, ESC=quit',
             f'Total Interventions: {len(p0.get_intervention_history())}',
+            f'Config: CoT={"ON" if enable_cot else "OFF"}, Memory={"ON" if enable_memory else "OFF"}',
         ]
 
         # Teammate model/type
@@ -379,12 +400,11 @@ def main():
                 if len(last_plan.get('steps', [])) > 3:
                     steps_str += '...'
                 info_lines.append(f'Plan Steps: {steps_str}')
-            # Rationale removed - using CoT instead
             if last_intervention_reason:
                 # Show intervention reason with special formatting
                 info_lines.append(('INTERVENTION_REASON', last_intervention_reason))
-            if last_chain_of_thought:
-                # Show chain of thought with special formatting
+            if enable_cot and last_chain_of_thought:
+                # Show chain of thought with special formatting (only if CoT is enabled)
                 info_lines.append(('CHAIN_OF_THOUGHT', last_chain_of_thought))
             
             # Show current ML action
@@ -393,23 +413,24 @@ def main():
                 info_lines.append(f'Current ML Action: {current_ml}')
                 
             
-            # Show teammate model from memory module (LLM-authored)
-            try:
-                mem_view = p0.memory.prompt_view() if hasattr(p0, 'memory') else {}
-                tm_view = mem_view.get('teammate_model', {}) if isinstance(mem_view, dict) else {}
-                tm_desc = tm_view.get('behavior_description')
-                tm_role = tm_view.get('role')
-                tm_conf = tm_view.get('role_confidence')
-                if tm_desc:
-                    # Defer wrapping; insert a tuple marker for later re-wrap with panel width
-                    info_lines.append(('TMODEL', tm_desc))
-                if tm_role is not None:
-                    if tm_conf is not None:
-                        info_lines.append(f'Teammate Role: {tm_role} (conf {float(tm_conf):.2f})')
-                    else:
-                        info_lines.append(f'Teammate Role: {tm_role}')
-            except Exception:
-                pass
+            # Show teammate model from memory module (LLM-authored) - only if memory is enabled
+            if enable_memory:
+                try:
+                    mem_view = p0.memory.prompt_view() if hasattr(p0, 'memory') else {}
+                    tm_view = mem_view.get('teammate_model', {}) if isinstance(mem_view, dict) else {}
+                    tm_desc = tm_view.get('behavior_description')
+                    tm_role = tm_view.get('role')
+                    tm_conf = tm_view.get('role_confidence')
+                    if tm_desc:
+                        # Defer wrapping; insert a tuple marker for later re-wrap with panel width
+                        info_lines.append(('TMODEL', tm_desc))
+                    if tm_role is not None:
+                        if tm_conf is not None:
+                            info_lines.append(f'Teammate Role: {tm_role} (conf {float(tm_conf):.2f})')
+                        else:
+                            info_lines.append(f'Teammate Role: {tm_role}')
+                except Exception:
+                    pass
             
         except Exception as e:
             info_lines.append(f'Debug Error: {str(e)[:30]}...')
