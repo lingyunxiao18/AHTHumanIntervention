@@ -66,7 +66,7 @@ def main():
     parser = argparse.ArgumentParser(description='ProAgentWithIntervention Demo')
     parser.add_argument('--layout', type=str, default='counter_circuit', help='Layout key (mapped via NEW_LAYOUTS)')
     parser.add_argument('--layout_name', type=str, default=None, help='Direct Overcooked layout name (overrides --layout)')
-    parser.add_argument('--horizon', type=int, default=400)
+    parser.add_argument('--horizon', type=int, default=200)
     parser.add_argument('--random_start', action='store_true', help='Randomize player starting positions')
     parser.add_argument(
         '--teammate',
@@ -347,8 +347,9 @@ def main():
                 joint = (a0_conv, a1_conv)
                 
                 # Enhanced logging with new interpreter output
+                # Show intervention_reason only if it's non-empty (i.e., when human actually intervened)
                 last_intervention_reason = getattr(p0, 'last_intervention_reason', None)
-                if last_intervention_reason:
+                if last_intervention_reason and last_intervention_reason.strip():
                     print(f"[STEP {step}] 🎯 Intervention Reason: {last_intervention_reason}")
                 if enable_cot:
                     last_chain_of_thought = getattr(p0, 'last_chain_of_thought', None)
@@ -400,7 +401,8 @@ def main():
                 if len(last_plan.get('steps', [])) > 3:
                     steps_str += '...'
                 info_lines.append(f'Plan Steps: {steps_str}')
-            if last_intervention_reason:
+            # Show intervention_reason only if it's non-empty (i.e., when human actually intervened)
+            if last_intervention_reason and last_intervention_reason.strip():
                 # Show intervention reason with special formatting
                 info_lines.append(('INTERVENTION_REASON', last_intervention_reason))
             if enable_cot and last_chain_of_thought:

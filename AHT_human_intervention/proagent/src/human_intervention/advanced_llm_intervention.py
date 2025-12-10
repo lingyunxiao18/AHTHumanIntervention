@@ -342,19 +342,28 @@ class LLMClient:
                 except json.JSONDecodeError as e:
                     raise ValueError(f"Failed to parse JSON: {e}. Raw LLM output: {raw!r}")
                 
+                # Remove any properties not in the schema (e.g., memory_writes when memory is disabled)
+                # This is necessary because the schema has additionalProperties: False
+                allowed_properties = set(schema.get("properties", {}).keys())
+                parsed = {k: v for k, v in parsed.items() if k in allowed_properties}
+                
                 # Repair common issues before validation
                 # Fix category field - ensure it's always a valid enum value
                 category = parsed.get("category", "vague")
                 if not category or category.strip() == "" or category not in ["policy", "env", "teammate", "vague"]:
                     parsed["category"] = "vague"
                 
-                # Ensure required fields exist
+                # Ensure required fields exist (only if they're in the schema)
                 parsed.setdefault("steps", ["wait(1)"])
-                parsed.setdefault("chain_of_thought", "No chain of thought provided")
+                if "chain_of_thought" in allowed_properties:
+                    parsed.setdefault("chain_of_thought", "No chain of thought provided")
                 parsed.setdefault("teammate_behavior", "")
-                parsed.setdefault("memory_writes", [])
-                parsed.setdefault("low_level_override", None)
-                parsed.setdefault("intervention_reason", "")
+                if "memory_writes" in allowed_properties:
+                    parsed.setdefault("memory_writes", [])
+                if "low_level_override" in allowed_properties:
+                    parsed.setdefault("low_level_override", None)
+                if "intervention_reason" in allowed_properties:
+                    parsed.setdefault("intervention_reason", "")
                 
                 # Truncate fields that have maxLength constraints
                 if "chain_of_thought" in parsed and isinstance(parsed["chain_of_thought"], str):
@@ -451,6 +460,8 @@ def _get_plan_json_schema(enable_cot: bool = True, enable_memory: bool = True) -
 	if not enable_memory:
 		schema["properties"].pop("memory_writes", None)
 	
+	# Note: intervention_reason is always kept in schema - it's empty when no intervention, filled when human intervenes
+	
 	return schema
 
 def _load_system_rules() -> str:
@@ -525,6 +536,8 @@ def _get_system_rules(enable_cot: bool = True, enable_memory: bool = True) -> st
 			'summarizing the teammate\'s recent role and pattern using `memory_view` and `recent_history`.',
 			'summarizing the teammate\'s recent role and pattern using `recent_history`.'
 		)
+	
+	# Note: intervention_reason is always kept in system prompt - it's empty when no intervention, filled when human intervenes
 	
 	return result
 
@@ -736,6 +749,10 @@ class AdvancedLLMInterpreter:
 		# Conditionally include memory_writes based on enable_memory
 		memory_writes = raw.get("memory_writes", []) if self.enable_memory else []
 		
+		# Always extract intervention_reason (it's always in schema)
+		# It will be empty string when no human intervention, filled when human intervenes
+		intervention_reason = str(raw.get("intervention_reason", ""))[:300]
+		
 		plan = Plan(
 			steps=validated_steps,
 			chain_of_thought=chain_of_thought,
@@ -743,7 +760,7 @@ class AdvancedLLMInterpreter:
 			teammate_behavior=str(raw.get("teammate_behavior", ""))[:220],
 			memory_writes=memory_writes,
 			low_level_override=raw.get("low_level_override"),
-			intervention_reason=str(raw.get("intervention_reason", ""))[:300],
+			intervention_reason=intervention_reason,
 		)
 
 		# Plan hygiene checks
