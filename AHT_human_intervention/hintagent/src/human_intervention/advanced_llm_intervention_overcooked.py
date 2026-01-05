@@ -521,7 +521,7 @@ def _get_plan_json_schema(enable_cot: bool = True, enable_memory: bool = True) -
 def _load_system_rules() -> str:
 	"""Load system rules from external file."""
 	script_dir = os.path.dirname(os.path.abspath(__file__))
-	rules_file = os.path.join(script_dir, "advanced_llm_system_rules.txt")
+	rules_file = os.path.join(script_dir, "advanced_llm_system_rules_overcooked.txt")
 	try:
 		with open(rules_file, 'r', encoding='utf-8') as f:
 			return f.read()

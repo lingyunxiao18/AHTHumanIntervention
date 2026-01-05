@@ -11,11 +11,11 @@ import threading
 import queue
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-PROAGENT_SRC = os.path.abspath(os.path.join(PROJECT_ROOT, 'proagent', 'src'))
-# Ensure ProAgent src takes precedence so we import the right utils
-if PROAGENT_SRC in sys.path:
-    sys.path.remove(PROAGENT_SRC)
-sys.path.insert(0, PROAGENT_SRC)
+HINTAGENT_SRC = os.path.abspath(os.path.join(PROJECT_ROOT, 'hintagent', 'src'))
+# Ensure HINT-Agent src takes precedence so we import the right modules
+if HINTAGENT_SRC in sys.path:
+    sys.path.remove(HINTAGENT_SRC)
+sys.path.insert(0, HINTAGENT_SRC)
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
@@ -29,8 +29,8 @@ from crowd_nav.configs.config import Config
 from crowd_sim.envs.utils.robot import Robot
 from crowd_nav.policy.orca import ORCA
 
-# Use ProAgent harness utilities and agent
-from proagent.proagent_with_intervention_crowdnav import ProAgentWithInterventionCrowdNav
+# Use HINT-Agent
+from hintagent import HINTAgentCrowdNav
 
 
 class TextDisplay:
@@ -151,7 +151,7 @@ class TextDisplay:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='ProAgentWithIntervention CrowdNav-AHT Demo')
+    parser = argparse.ArgumentParser(description='HINT-Agent CrowdNav-AHT Demo')
     parser.add_argument('--horizon', type=int, default=200, help='Maximum number of steps')
     parser.add_argument('--seed', type=int, default=6, help='Random seed for environment')
     
@@ -216,8 +216,8 @@ def main():
     robot.policy = ORCA(config)
     env.set_robot(robot)
 
-    # Create ProAgent with intervention
-    p0 = ProAgentWithInterventionCrowdNav(model='gpt-5-mini', agent_index=0)
+    # Create HINT-Agent with intervention
+    p0 = HINTAgentCrowdNav(model='gpt-5-mini', agent_index=0)
     p0.set_agent_index(0)
 
     # Setup matplotlib figure with two subplots: visualization and text

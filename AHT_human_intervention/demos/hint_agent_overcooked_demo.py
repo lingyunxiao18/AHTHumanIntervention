@@ -6,11 +6,11 @@ import pygame
 import time
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-PROAGENT_SRC = os.path.abspath(os.path.join(PROJECT_ROOT, 'proagent', 'src'))
-# Ensure ProAgent src takes precedence so we import the right utils
-if PROAGENT_SRC in sys.path:
-    sys.path.remove(PROAGENT_SRC)
-sys.path.insert(0, PROAGENT_SRC)
+HINTAGENT_SRC = os.path.abspath(os.path.join(PROJECT_ROOT, 'hintagent', 'src'))
+# Ensure HINT-Agent src takes precedence so we import the right modules
+if HINTAGENT_SRC in sys.path:
+    sys.path.remove(HINTAGENT_SRC)
+sys.path.insert(0, HINTAGENT_SRC)
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
@@ -18,6 +18,7 @@ from shared.envs.envs.overcooked.overcooked_ai_py.mdp.overcooked_mdp import Over
 from shared.envs.envs.overcooked.overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from shared.envs.envs.overcooked.overcooked_ai_py.mdp.actions import Action, Direction
 from shared.envs.envs.overcooked.overcooked_ai_py.visualization.state_visualizer import StateVisualizer
+from shared.envs.envs.overcooked.overcooked_ai_py.planning.planners import MediumLevelPlanner
 from shared.agents.onion_specialist_agent import OnionSpecialistAgent
 from shared.agents.dish_specialist_agent import DishSpecialistAgent
 from shared.agents.greedy_agent import GreedyAgent
@@ -25,9 +26,8 @@ from shared.agents.random_agent import RandomAgent
 from shared.agents.simple_handcoded_agent import SimpleHandcodedAgent
 from shared.agents.stay_agent import StayAgent
 
-# Use ProAgent harness utilities and agent
-import utils as pro_utils  # type: ignore
-from proagent.proagent_with_intervention import ProAgentWithIntervention
+# Use HINT-Agent
+from hintagent import HINTAgent
 
 
 def convert_action(a):
@@ -63,7 +63,7 @@ def convert_action(a):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='ProAgentWithIntervention Demo')
+    parser = argparse.ArgumentParser(description='HINT-Agent Demo')
     parser.add_argument('--layout', type=str, default='counter_circuit', help='Layout key (mapped via NEW_LAYOUTS)')
     parser.add_argument('--layout_name', type=str, default=None, help='Direct Overcooked layout name (overrides --layout)')
     parser.add_argument('--horizon', type=int, default=200)
@@ -87,43 +87,48 @@ def main():
     args = parser.parse_args()
 
     layout = args.layout
+    # Layout name mapping
+    NEW_LAYOUTS = {
+        "cramped_room": "simple",
+        "coordination_ring": "random1",
+        "forced_coordination": "random0",
+        "counter_circuit": "random3",
+        "asymmetric_advantages": "unident_s",
+    }
     if args.layout_name is not None:
         layout_name = args.layout_name
     else:
-        layout_name = pro_utils.NEW_LAYOUTS.get(layout, layout)
+        layout_name = NEW_LAYOUTS.get(layout, layout)
 
     mdp = OvercookedGridworld.from_layout_name(layout_name)
     start_fn = mdp.get_random_start_state_fn(random_start_pos=True) if args.random_start else None
     env = OvercookedEnv(mdp, start_state_fn=start_fn, horizon=args.horizon)
     env.reset()
 
-    # Agents: Player0 = ProAgentWithIntervention, Player1 = OnionSpecialistAgent
-    # Create base ProAgent first to get MLAM, then wrap with intervention
-    base_agent = pro_utils.make_agent(
-        'ProAgent',
-        mdp,
-        layout,
-        model='gpt-5-mini',
-        retrival_method='recent_k',
-        K=10,
-        prompt_level='l2-ap',
-        belief_revision=True,
-        auto_unstuck=False,
-    )
+    # Agents: Player0 = HINTAgent, Player1 = OnionSpecialistAgent
+    # Create MLAM directly (no need to create a ProAgent instance)
+    MLAM_PARAMS = {
+        "start_orientations": False,
+        "wait_allowed": True,
+        "counter_goals": [],
+        "counter_drop": [],
+        "counter_pickup": [],
+        "same_motion_goals": True,
+    }
+    counter_locations = mdp.get_counter_locations()
+    MLAM_PARAMS["counter_goals"] = counter_locations
+    MLAM_PARAMS["counter_drop"] = counter_locations
+    MLAM_PARAMS["counter_pickup"] = counter_locations
+    mlam = MediumLevelPlanner.from_pickle_or_compute(mdp, MLAM_PARAMS, force_compute=True).ml_action_manager
     
-    # Create ProAgentWithIntervention using the same MLAM
+    # Create HINTAgent using the MLAM
     # Ablation study options: control CoT and memory separately
     enable_cot = not args.no_cot
     enable_memory = not args.no_memory
-    p0 = ProAgentWithIntervention(
-        base_agent.mlam,
+    p0 = HINTAgent(
+        mlam,
         layout,
         model='gpt-5-mini',
-        retrival_method='recent_k',
-        K=10,
-        prompt_level='l2-ap',
-        belief_revision=True,
-        auto_unstuck=False,
         enable_cot=enable_cot,
         enable_memory=enable_memory,
     )
@@ -150,13 +155,13 @@ def main():
     pygame.init()
     # Slightly narrower to better fit on screen
     screen = pygame.display.set_mode((1400, 800))
-    pygame.display.set_caption(f'ProAgentWithIntervention Demo [{layout_name}] (Player0) + {getattr(p1, "agent_name", type(p1).__name__)} (Player1)')
+    pygame.display.set_caption(f'HINT-Agent Demo [{layout_name}] (Player0) + {getattr(p1, "agent_name", type(p1).__name__)} (Player1)')
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 24)
     viz = StateVisualizer()
     
     # Print helpful information about the new interpreter system
-    print("🤖 ProAgentWithIntervention Demo Started")
+    print("🤖 HINT-Agent Demo Started")
     print("📋 Interpreter Configuration:")
     print(f"   - Chain-of-Thought (CoT): {'ENABLED' if enable_cot else 'DISABLED'}")
     print(f"   - Memory Module: {'ENABLED' if enable_memory else 'DISABLED'}")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ProAgent with Advanced LLM Intervention Support for CrowdNav-AHT
+HINT-Agent: Human-INtervention-enhanced Agent for CrowdNav-AHT
 
 This is a self-contained agent that uses AdvancedLLMInterpreter (CoT + Memory) as the planner
 for crowd navigation with waypoint-based actions.
@@ -27,7 +27,7 @@ try:
     )
 except ImportError:
     # Fallback for different import contexts
-    intervention_path = os.path.join(PROJECT_ROOT, 'proagent', 'src', 'human_intervention')
+    intervention_path = os.path.join(PROJECT_ROOT, 'hintagent', 'src', 'human_intervention')
     if intervention_path not in sys.path:
         sys.path.append(intervention_path)
     from advanced_llm_intervention_crowdnav import (
@@ -54,7 +54,7 @@ WAYPOINT_DIRECTIONS = {
 }
 
 
-class ProAgentWithInterventionCrowdNav:
+class HINTAgentCrowdNav:
     """
     Self-contained ProAgent for CrowdNav-AHT that uses AdvancedLLMInterpreter as the planner.
     
@@ -116,7 +116,7 @@ class ProAgentWithInterventionCrowdNav:
         self.last_intervention_reason: Optional[str] = None
         self.last_chain_of_thought: Optional[str] = None
         
-        print(f"🤖 ProAgentWithInterventionCrowdNav initialized with interpreter-based planner")
+        print(f"🤖 HINTAgentCrowdNav initialized with interpreter-based planner")
     
     # ==================== OpenAI Key Management ====================
     

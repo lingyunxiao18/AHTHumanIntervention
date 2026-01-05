@@ -1,6 +1,6 @@
-# ProAgent Demo - macOS Setup Guide
+# HINT-Agent Demo - macOS Setup Guide
 
-This guide will help you set up and run the `proagent_demo.py` on macOS. The demo features an interactive Overcooked game where you can play alongside an AI agent (ProAgent) and provide real-time interventions to guide its behavior.
+This guide will help you set up and run the `hint_agent_overcooked_demo.py` on macOS. The demo features an interactive Overcooked game where you can play alongside an AI agent (HINT-Agent) and provide real-time interventions to guide its behavior.
 
 ## Prerequisites
 
@@ -60,7 +60,7 @@ Navigate to the demos directory and run the script:
 
 ```bash
 cd AHT_human_intervention/demos
-python proagent_demo.py
+python hint_agent_overcooked_demo.py
 ```
 
 ### Command-Line Arguments
@@ -71,7 +71,7 @@ You can customize the demo with the following arguments:
 
 **Option 1: Use predefined layout keys**
 ```bash
-python proagent_demo.py --layout <layout_key>
+python hint_agent_overcooked_demo.py --layout <layout_key>
 ```
 
 Available layout keys:
@@ -83,7 +83,7 @@ Available layout keys:
 
 **Option 2: Use direct Overcooked layout name**
 ```bash
-python proagent_demo.py --layout_name <direct_layout_name>
+python hint_agent_overcooked_demo.py --layout_name <direct_layout_name>
 ```
 
 This overrides the `--layout` argument. Examples: `random3`, `random0`, `simple`, `random1`, `unident_s`. You may find all these layouts under ```shared/envs/envs/overcooked/overcooked_ai_py/layouts```
@@ -93,7 +93,7 @@ This overrides the `--layout` argument. Examples: `random3`, `random0`, `simple`
 Choose your AI teammate using the `--teammate` argument:
 
 ```bash
-python proagent_demo.py --teammate <teammate_type>
+python hint_agent_overcooked_demo.py --teammate <teammate_type>
 ```
 
 Available teammates:
@@ -109,7 +109,7 @@ Available teammates:
 Set the maximum number of steps in the episode:
 
 ```bash
-python proagent_demo.py --horizon <number>
+python hint_agent_overcooked_demo.py --horizon <number>
 ```
 
 Default: `400` steps
@@ -119,7 +119,7 @@ Default: `400` steps
 Enable random starting positions for players:
 
 ```bash
-python proagent_demo.py --random_start
+python hint_agent_overcooked_demo.py --random_start
 ```
 
 By default, players start at fixed positions defined by the layout.
@@ -130,51 +130,51 @@ Control the Chain-of-Thought (CoT) reasoning and memory modules for ablation stu
 
 **Disable Chain-of-Thought reasoning:**
 ```bash
-python proagent_demo.py --no_cot
+python hint_agent_overcooked_demo.py --no_cot
 ```
 
 **Disable Memory module:**
 ```bash
-python proagent_demo.py --no_memory
+python hint_agent_overcooked_demo.py --no_memory
 ```
 
 **Disable both (Baseline mode):**
 ```bash
-python proagent_demo.py --no_cot --no_memory
+python hint_agent_overcooked_demo.py --no_cot --no_memory
 ```
 
 ### Example Commands
 
 **Basic run with defaults:**
 ```bash
-python proagent_demo.py
+python hint_agent_overcooked_demo.py
 ```
 
 **Custom layout and teammate:**
 ```bash
-python proagent_demo.py --layout cramped_room --teammate dish_specialist
+python hint_agent_overcooked_demo.py --layout cramped_room --teammate dish_specialist
 ```
 
 **Full customization:**
 ```bash
-python proagent_demo.py --layout coordination_ring --teammate greedy --horizon 500 --random_start
+python hint_agent_overcooked_demo.py --layout coordination_ring --teammate greedy --horizon 500 --random_start
 ```
 
 **Using direct layout name:**
 ```bash
-python proagent_demo.py --layout_name random3 --teammate onion_specialist --horizon 300
+python hint_agent_overcooked_demo.py --layout_name random3 --teammate onion_specialist --horizon 300
 ```
 
 **Ablation study examples:**
 ```bash
 # Baseline mode (no CoT, no memory)
-python proagent_demo.py --no_cot --no_memory --layout counter_circuit
+python hint_agent_overcooked_demo.py --no_cot --no_memory --layout counter_circuit
 
 # CoT only (reasoning without memory)
-python proagent_demo.py --no_memory --layout counter_circuit
+python hint_agent_overcooked_demo.py --no_memory --layout counter_circuit
 
 # Memory only (no explicit reasoning display)
-python proagent_demo.py --no_cot --layout counter_circuit
+python hint_agent_overcooked_demo.py --no_cot --layout counter_circuit
 ```
 
 ## Step 4: Game Controls
@@ -200,7 +200,7 @@ This guide explains how to run the CrowdNav-AHT demo simulation, which features 
 
 ## Prerequisites
 
-The CrowdNav demo shares the same prerequisites as the ProAgent demo:
+The CrowdNav demo shares the same prerequisites as the HINT-Agent demo:
 - macOS (recommended) or Linux
 - Conda (miniforge3 recommended)
 - OpenAI API key (same setup as Step 2 above)

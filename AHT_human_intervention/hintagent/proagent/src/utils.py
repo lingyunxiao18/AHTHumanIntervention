@@ -88,7 +88,7 @@ def make_agent(alg:str, mdp, layout, **gptargs):
             mlam = MediumLevelPlanner.from_pickle_or_compute(mdp, MLAM_PARAMS, force_compute=True).ml_action_manager 
             # Lazy import to avoid importing openai or TF unless ProAgent is used
             try:
-                from proagent.src.proagent.proagent import ProMediumLevelAgent  # noqa: WPS433
+                from proagent.proagent import ProMediumLevelAgent  # noqa: WPS433
             except Exception:
                 # Fallback: import with PROAGENT_SRC on sys.path (so module is proagent.proagent)
                 PROAGENT_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), ''))

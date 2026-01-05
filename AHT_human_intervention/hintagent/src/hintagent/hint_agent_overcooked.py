@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ProAgent with Advanced LLM Intervention Support
+HINT-Agent: Human-INtervention-enhanced Agent with Advanced LLM Support
 
 This is a self-contained agent that uses AdvancedLLMInterpreter (CoT + Memory) as the planner
 while incorporating the controller and verificator logic from the original ProAgent.
@@ -22,10 +22,10 @@ if PROJECT_ROOT not in sys.path:
 from shared.envs.envs.overcooked.overcooked_ai_py.mdp.actions import Action, Direction
 
 # Import advanced intervention system
-intervention_path = os.path.join(PROJECT_ROOT, 'proagent', 'src', 'human_intervention')
+intervention_path = os.path.join(PROJECT_ROOT, 'hintagent', 'src', 'human_intervention')
 if intervention_path not in sys.path:
     sys.path.append(intervention_path)
-    from advanced_llm_intervention import (
+    from advanced_llm_intervention_overcooked import (
         AgentMemory,
         AdvancedLLMInterpreter,
         HumanMessage,
@@ -106,7 +106,7 @@ def detect_environment_events(state, prev_state, stuck_counter, agent_index=0):
     return events, stuck_counter
 
 
-class ProAgentWithIntervention:
+class HINTAgent:
     """
     Self-contained ProAgent that uses AdvancedLLMInterpreter as the planner.
     
@@ -174,7 +174,7 @@ class ProAgentWithIntervention:
         )
         cot_status = "ENABLED" if enable_cot else "DISABLED"
         mem_status = "ENABLED" if enable_memory else "DISABLED"
-        print(f"🤖 ProAgentWithIntervention initialized (CoT: {cot_status}, Memory: {mem_status})")
+        print(f"🤖 HINTAgent initialized (CoT: {cot_status}, Memory: {mem_status})")
         
         # Human intervention tracking
         self._human_inbox: List[str] = []
