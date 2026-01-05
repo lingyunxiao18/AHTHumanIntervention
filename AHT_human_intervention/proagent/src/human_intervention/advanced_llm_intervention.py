@@ -39,6 +39,60 @@ Category = Literal["policy", "env", "teammate", "vague"]
 # Outputs: structured Plan JSON, one-sentence rationale, message category
 # ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+# ICL Helper Functions for Memory Case Building
+# ---------------------------------------------------------------------
+
+def _describe_situation_for_memory(state, events=None) -> str:
+	"""Short natural-language description of the local situation for ICL."""
+	try:
+		players = getattr(state, "players", [])
+		terrain_shape = getattr(state, "terrain_mtx", None)
+		ego = players[0] if len(players) > 0 else None
+		mate = players[1] if len(players) > 1 else None
+
+		ego_pos = list(ego.position) if ego is not None else None
+		mate_pos = list(mate.position) if mate is not None else None
+		ego_hold = str(ego.held_object.name) if ego is not None and ego.held_object else "nothing"
+		mate_hold = str(mate.held_object.name) if mate is not None and mate.held_object else "nothing"
+
+		parts = []
+		if terrain_shape is not None:
+			parts.append(f"Layout size {terrain_shape[1]}x{terrain_shape[0]}")
+		if ego_pos is not None:
+			parts.append(f"ego at {ego_pos} holding {ego_hold}")
+		if mate_pos is not None:
+			parts.append(f"teammate at {mate_pos} holding {mate_hold}")
+		if events:
+			parts.append("recent events: " + ", ".join(events))
+		return "; ".join(parts) if parts else "situation unknown"
+	except Exception:
+		return "situation unknown"
+
+
+def _describe_intervention_for_memory(plan: "Plan", human_msg: "HumanMessage") -> str:
+	"""Short text description of what the human asked and what the agent did."""
+	steps = plan.steps or []
+	steps_txt = ", ".join(steps) if steps else "no planned ML steps"
+	ll_override = plan.low_level_override or "none"
+	msg = human_msg.text.strip() or "no explicit human text"
+	return (
+		f'human said: "{msg}". '
+		f"Interpreter chose ML steps: [{steps_txt}], "
+		f"low_level_override: {ll_override}."
+	)
+
+
+def _infer_preconditions_for_memory(state, events=None) -> str:
+	"""Rough textual preconditions – heuristics are fine, LLM will refine."""
+	base = []
+	if events:
+		base.append("Triggered by events: " + ", ".join(events))
+	# You can refine this later with more specific conditions (e.g. blocking chokepoint)
+	if not base:
+		base.append("generic intervention context")
+	return "; ".join(base)
+
 @dataclass
 class Plan:
 	steps: List[str]  # List of ML_action strings instead of MacroStep objects
@@ -316,7 +370,7 @@ class LLMClient:
                     ],
                     response_format={"type": "json_object"},
                     temperature=1,
-                    max_completion_tokens=2048,
+                    max_completion_tokens=4096,
                 )
                 
                 # Check if response is valid
@@ -606,13 +660,52 @@ class AdvancedLLMInterpreter:
 		except Exception as e:
 			pass
 
+	def _select_icl_examples(self, events=None, k: int = 4) -> List[Dict[str, Any]]:
+		"""Select a small set of ICL examples from intervention_patterns."""
+		patterns = self.memory.semantic.get("intervention_patterns", [])
+		if not patterns:
+			return []
+		
+		# Prefer patterns whose events overlap with current events
+		if events:
+			def score(p):
+				pe = set(p.get("events_triggered") or [])
+				ce = set(events)
+				overlap = len(pe.intersection(ce))
+				# Break ties by recency (timestamp)
+				return (overlap, p.get("timestamp", 0))
+			sorted_p = sorted(patterns, key=score, reverse=True)
+		else:
+			# Fallback: just most recent patterns
+			sorted_p = patterns[-k:]
+		
+		selected = sorted_p[:k]
+		
+		# Trim each example to the fields the LLM really needs (keep prompt small)
+		examples = []
+		for p in selected:
+			examples.append({
+				"timestamp": p.get("timestamp"),
+				"events_triggered": p.get("events_triggered", []),
+				"situation": p.get("situation_text", ""),
+				"human_intent": p.get("human_intent", ""),
+				"intervention_text": p.get("intervention_text", ""),
+				"preconditions": p.get("preconditions", ""),
+				"postconditions": p.get("postconditions", ""),
+				"outcome": p.get("outcome", "unknown"),
+				# minimal raw info in case model wants concrete action
+				"action_taken": p.get("action_taken"),
+				"low_level_override": p.get("low_level_override"),
+			})
+		return examples
+
 	def _store_intervention_pattern(self, plan: Plan, human_msg: HumanMessage, state=None, events=None) -> None:
-		"""Store intervention pattern in memory for future learning."""
+		"""Store intervention pattern in memory for future learning (ICL-style case)."""
 		if not self.enable_memory or not plan.intervention_reason or state is None:
 			return
 		
 		try:
-			# Extract key state features for pattern matching
+			# Extract key state features for pattern matching (as before)
 			ego_pos = None
 			mate_pos = None
 			ego_holding = None
@@ -620,7 +713,7 @@ class AdvancedLLMInterpreter:
 			
 			players = getattr(state, "players", [])
 			if len(players) > 0:
-				ego = players[0]  # Assuming agent_index=0 for ego
+				ego = players[0]  # Assuming agent_index=0 for ego here
 				ego_pos = [int(ego.position[0]), int(ego.position[1])]
 				ego_holding = str(ego.held_object.name) if ego.held_object else "nothing"
 			if len(players) > 1:
@@ -628,10 +721,24 @@ class AdvancedLLMInterpreter:
 				mate_pos = [int(mate.position[0]), int(mate.position[1])]
 				mate_holding = str(mate.held_object.name) if mate.held_object else "nothing"
 			
+			# Build higher-level textual descriptors for ICL
+			situation_text = _describe_situation_for_memory(state, events)
+			human_intent = plan.intervention_reason or "human intervened to adjust behavior"
+			intervention_text = _describe_intervention_for_memory(plan, human_msg)
+			preconditions_text = _infer_preconditions_for_memory(state, events)
+			# For now we don't know outcome yet; you can update this later if you log success/failure
+			outcome_text = "unknown (not yet labeled)"
+			
 			pattern = {
+				# Core identifiers and raw info
 				"timestamp": human_msg.t,
 				"human_message": human_msg.text,
 				"intervention_reason": plan.intervention_reason,
+				"events_triggered": events or [],
+				"action_taken": plan.steps[0] if plan.steps else None,
+				"low_level_override": plan.low_level_override,
+				
+				# Local context snapshot (for structured similarity)
 				"context": {
 					"ego_pos": ego_pos,
 					"ego_holding": ego_holding,
@@ -639,9 +746,14 @@ class AdvancedLLMInterpreter:
 					"mate_holding": mate_holding,
 					"terrain_shape": state.terrain_mtx.shape if hasattr(state, 'terrain_mtx') else None,
 				},
-				"events_triggered": events or [],  # Store events that triggered this intervention
-				"action_taken": plan.steps[0] if plan.steps else None,
-				"low_level_override": plan.low_level_override,
+				
+				# NEW: ICL-friendly fields
+				"situation_text": situation_text,
+				"human_intent": human_intent,
+				"intervention_text": intervention_text,
+				"preconditions": preconditions_text,
+				"postconditions": "",          # you can fill this later if you log what changed
+				"outcome": outcome_text,
 			}
 			
 			# Store in memory
@@ -649,10 +761,19 @@ class AdvancedLLMInterpreter:
 				self.memory.semantic["intervention_patterns"] = []
 			
 			self.memory.semantic["intervention_patterns"].append(pattern)
-			print("Storing pattern:", pattern)
+			
+			# (Optional) keep only the last N patterns to bound prompt size
+			max_patterns = 32
+			if len(self.memory.semantic["intervention_patterns"]) > max_patterns:
+				self.memory.semantic["intervention_patterns"] = \
+					self.memory.semantic["intervention_patterns"][-max_patterns:]
+			
+			print(f"[ICL] Stored intervention pattern (t={human_msg.t}): {situation_text[:60]}...")
 			
 		except Exception as e:
-			pass
+			# Be conservative: never crash the interpreter because of logging
+			print(f"[WARN] _store_intervention_pattern failed: {e}")
+			return
 
 	def propose_plan(
 		self,
@@ -690,7 +811,21 @@ class AdvancedLLMInterpreter:
 		
 		# Conditionally include memory_view if memory is enabled
 		if self.enable_memory:
-			user_payload["memory_view"] = self.memory.prompt_view()
+			mem_view = self.memory.prompt_view()
+			# Replace the raw intervention_patterns with a curated ICL subset
+			icl_examples = self._select_icl_examples(events=events, k=4)
+			mem_view["intervention_patterns"] = icl_examples
+			user_payload["memory_view"] = mem_view
+			# Also expose them explicitly for clarity
+			user_payload["icl_examples"] = icl_examples
+			
+			# Debug: print ICL examples being used
+			if icl_examples:
+				print(f"[ICL] Using {len(icl_examples)} examples:")
+				for i, ex in enumerate(icl_examples):
+					situation = ex.get("situation", "")[:50]
+					events_str = ", ".join(ex.get("events_triggered", []))
+					print(f"  [{i+1}] t={ex.get('timestamp')} events=[{events_str}] situation={situation}...")
 
 		# Optional: Automatic pattern matching for event-based triggers
 		# Pre-fill low_level_override if a matching pattern is found (gives LLM a hint)

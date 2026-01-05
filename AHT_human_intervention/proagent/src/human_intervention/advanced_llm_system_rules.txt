@@ -130,25 +130,47 @@ you MUST autonomously apply the same corrective `low_level_override` **even with
 This reuse should occur BEFORE following the medium-level plan and should be stated in chain_of_thought.
 
 ────────────────────────────────────────────
-MEMORY AND APPLYING SIMILAR INTERVENTIONS 
+MEMORY AND APPLYING SIMILAR INTERVENTIONS (IN-CONTEXT LEARNING)
 ────────────────────────────────────────────
-You are given "intervention_patterns": these are past successful human corrections. 
-When deciding your next action, do the following:
+You are given a memory_view which includes:
 
-1. Read each intervention pattern (including its `events_triggered` field).
-2. Compare the current state_prompt positions and situation to the pattern's
-   "context" including ego_pos, mate_pos, and relative motion.
-3. If the situation is similar (e.g., blocking, collision risk, deadlock,
-   repeated positional conflict), reuse the low_level_override from the most similar 
-   pattern (if present); otherwise reuse the action_taken.
-4. If a past action successfully solved a similar situation (for example,
-   moving east to break a deadlock), prefer that action.
-5. You may override the learned policy if a stored pattern suggests a safer
-   or more efficient action.
-6. When you reuse a pattern, explain in chain_of_thought which pattern you
-   matched and why the action is appropriate now.
-7. **PRIORITIZE EVENT-BASED MATCHING**: If current EVENTS match a pattern's `events_triggered`,
-   that pattern takes precedence over positional similarity matching.
+- memory_view.intervention_patterns: a small list of past human interventions as FEW-SHOT EXAMPLES.
+  Each example includes:
+    - situation: natural-language description of the situation when the human intervened
+    - human_intent: why the human intervened (the intervention_reason)
+    - intervention_text: what the human asked and what was executed
+    - events_triggered: which events were active (e.g., "collision", "no_progress", "teammate_blocking_path")
+    - preconditions: conditions that triggered the intervention
+    - postconditions: (may be empty) what changed after the intervention
+    - outcome: (may be "unknown") whether the intervention was successful
+    - action_taken: the ML action that was executed
+    - low_level_override: the low-level action override used (if any)
+
+Use these as FEW-SHOT EXAMPLES for in-context learning:
+
+1. First, infer general patterns:
+   - When do humans typically intervene? (Look at preconditions and events_triggered)
+   - What kinds of actions resolve the problem? (Look at action_taken and low_level_override)
+   - What preconditions must hold for the intervention to be safe? (Look at preconditions and situation)
+
+2. Then, for the CURRENT state and events:
+   - Compare the current situation to each memory example's "situation" and "preconditions".
+   - If one or more examples are clearly analogous AND safe, propose an intervention that
+     follows the same pattern, but adapt directions and details to the CURRENT layout and positions.
+   - Do NOT blindly copy an old action if the geometry or context has changed.
+   - **PRIORITIZE EVENT-BASED MATCHING**: If current EVENTS match a pattern's `events_triggered`,
+     that pattern takes precedence over positional similarity matching.
+
+3. If NONE of the memory examples apply safely, it is better to:
+   - NOT intervene (low_level_override = null), and
+   - Explain briefly in chain_of_thought why the examples are not applicable.
+
+4. When you reuse a pattern:
+   - Explain in chain_of_thought which example you matched and why the action is appropriate now.
+   - Adapt the action to the current context (e.g., if the example used "move_east" but you're in a different layout,
+     choose the appropriate direction for the current situation).
+
+You must always check preconditions and safety conditions when reusing an intervention.
 
 CONSTRAINTS
 ────────────────────────────────────────────

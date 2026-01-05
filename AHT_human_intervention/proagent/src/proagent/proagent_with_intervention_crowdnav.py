@@ -37,9 +37,9 @@ except ImportError:
         LLMClient,
     )
 
-# OpenAI key handling
-cwd = os.getcwd()
-openai_key_file = os.path.join(cwd, "openai_key.txt")
+# OpenAI key file is at workspace root (one level up from PROJECT_ROOT)
+WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
+openai_key_file = os.path.join(WORKSPACE_ROOT, "openai_key.txt")
 
 # Waypoint action directions (0-7)
 WAYPOINT_DIRECTIONS = {
@@ -64,7 +64,7 @@ class ProAgentWithInterventionCrowdNav:
     - Waypoint-based action selection (0-7)
     """
     
-    def __init__(self, model='gpt-4o-mini', agent_index=0, 
+    def __init__(self, model='gpt-5-mini', agent_index=0, 
                  history_horizon=8, **kwargs):
         """
         Initialize ProAgent with AdvancedLLMInterpreter planner for CrowdNav-AHT.
@@ -106,10 +106,6 @@ class ProAgentWithInterventionCrowdNav:
         self._recent_history: List[Dict[str, Any]] = []
         self._intervention_history: List[str] = []
         
-        # Stall tracking for Match→Apply
-        self._stall_ticks = 0
-        self._prev_goal_distance = None
-        self._cooldowns = {}
         self._last_human_intervention_tick = None
         self._last_human_intervention_action = None
         self._last_human_intervention_text = None
@@ -130,22 +126,14 @@ class ProAgentWithInterventionCrowdNav:
         if api_key_env:
             self.openai_api_keys = [api_key_env.strip()]
             return
-        # 2) Try CWD openai_key.txt (repo root during demos)
+        # 2) Try workspace root openai_key.txt
         if os.path.exists(openai_key_file):
             with open(openai_key_file, "r") as f:
                 context = f.read()
             self.openai_api_keys = [k for k in context.split('\n') if k.strip()]
             if self.openai_api_keys:
                 return
-        # 3) Fallback to proagent/src/openai_key.txt
-        alt_key_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "openai_key.txt"))
-        if os.path.exists(alt_key_file):
-            with open(alt_key_file, "r") as f:
-                context = f.read()
-            self.openai_api_keys = [k for k in context.split('\n') if k.strip()]
-            if self.openai_api_keys:
-                return
-        raise FileNotFoundError("OPENAI_API_KEY not set and openai_key.txt not found in CWD or proagent/src/")
+        raise FileNotFoundError("OPENAI_API_KEY not set and openai_key.txt not found in workspace root")
 
     def openai_api_key(self):
         if self.key_rotation:

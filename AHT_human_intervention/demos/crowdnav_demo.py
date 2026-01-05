@@ -154,10 +154,57 @@ def main():
     parser = argparse.ArgumentParser(description='ProAgentWithIntervention CrowdNav-AHT Demo')
     parser.add_argument('--horizon', type=int, default=200, help='Maximum number of steps')
     parser.add_argument('--seed', type=int, default=6, help='Random seed for environment')
+    
+    # Background agent configuration
+    parser.add_argument('--human_num', type=int, default=None, 
+                        help='Total number of humans (includes teammate + background agents). Default: 4')
+    parser.add_argument('--human_num_range', type=int, default=None,
+                        help='Variation range for human_num. Actual number will be (human_num - range) to (human_num + range). Default: 2')
+    parser.add_argument('--circle_radius', type=float, default=None,
+                        help='Radius (meters) of the circle where agents start. Default: 6.0')
+    parser.add_argument('--human_radius', type=float, default=None,
+                        help='Radius (meters) of each human agent. Default: 0.3')
+    parser.add_argument('--human_v_pref', type=float, default=None,
+                        help='Maximum velocity (m/s) of each human agent. Default: 1.0')
+    parser.add_argument('--robot_radius', type=float, default=None,
+                        help='Radius (meters) of the robot. Default: 0.3')
+    parser.add_argument('--robot_v_pref', type=float, default=None,
+                        help='Maximum velocity (m/s) of the robot. Default: 1.0')
+    
     args = parser.parse_args()
 
     # Initialize environment
     config = Config()
+    
+    # Apply command-line overrides for agent configuration
+    if args.human_num is not None:
+        config.sim.human_num = args.human_num
+        print(f"📊 Setting total humans to {args.human_num}")
+    if args.human_num_range is not None:
+        config.sim.human_num_range = args.human_num_range
+        print(f"📊 Setting human_num_range to {args.human_num_range}")
+    if args.circle_radius is not None:
+        config.sim.circle_radius = args.circle_radius
+        print(f"📊 Setting circle_radius to {args.circle_radius}")
+    if args.human_radius is not None:
+        config.humans.radius = args.human_radius
+        print(f"📊 Setting human radius to {args.human_radius}")
+    if args.human_v_pref is not None:
+        config.humans.v_pref = args.human_v_pref
+        print(f"📊 Setting human max velocity to {args.human_v_pref}")
+    if args.robot_radius is not None:
+        config.robot.radius = args.robot_radius
+        print(f"📊 Setting robot radius to {args.robot_radius}")
+    if args.robot_v_pref is not None:
+        config.robot.v_pref = args.robot_v_pref
+        print(f"📊 Setting robot max velocity to {args.robot_v_pref}")
+    
+    # Validate configuration
+    if config.sim.human_num - config.sim.human_num_range < 1:
+        print(f"⚠️  Warning: human_num ({config.sim.human_num}) - human_num_range ({config.sim.human_num_range}) < 1")
+        print(f"   Adjusting human_num_range to {config.sim.human_num - 1}")
+        config.sim.human_num_range = config.sim.human_num - 1
+    
     env = CrowdSimAHT()
     env.configure(config)
     env.thisSeed = args.seed
@@ -170,7 +217,7 @@ def main():
     env.set_robot(robot)
 
     # Create ProAgent with intervention
-    p0 = ProAgentWithInterventionCrowdNav(model='gpt-4o-mini', agent_index=0)
+    p0 = ProAgentWithInterventionCrowdNav(model='gpt-5-mini', agent_index=0)
     p0.set_agent_index(0)
 
     # Setup matplotlib figure with two subplots: visualization and text

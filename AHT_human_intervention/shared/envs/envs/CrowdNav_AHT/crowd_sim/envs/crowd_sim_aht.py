@@ -22,6 +22,9 @@ class CrowdSimAHT(CrowdSimDict):
         self.wp_dist = 3
         self._render_buffer = []
         self.max_text_len = 1024
+        # Boundary limits (matches render bounds)
+        self.boundary_min = -10.0
+        self.boundary_max = 10.0
 
     # --- inside class CrowdSimAHT(CrowdSimDict) ---
     def set_robot(self, robot):
@@ -204,6 +207,12 @@ class CrowdSimAHT(CrowdSimDict):
             self.robot.step(orca_action)
             for i, human_action in enumerate(human_actions):
                 self.humans[i].step(human_action)
+            # Clip positions to boundaries to prevent agents from moving outside
+            self.robot.px = np.clip(self.robot.px, self.boundary_min, self.boundary_max)
+            self.robot.py = np.clip(self.robot.py, self.boundary_min, self.boundary_max)
+            for human in self.humans:
+                human.px = np.clip(human.px, self.boundary_min, self.boundary_max)
+                human.py = np.clip(human.py, self.boundary_min, self.boundary_max)
             self.global_time += self.time_step
 
             # Check if robot reached the waypoint (within epsilon)
@@ -235,6 +244,90 @@ class CrowdSimAHT(CrowdSimDict):
         self._last_selected_waypoint = (wx, wy)
 
         return ob, last_reward, last_done, info
+
+    def calc_reward(self, action):
+        """
+        Override calc_reward to allow robot to reach goal when teammate is at goal.
+        Simple solution: if one agent is at the goal and the other is sufficiently close, mark as success.
+        """
+        from crowd_sim.envs.utils.info import ReachGoal, Collision, Danger, Timeout, Nothing
+        
+        # collision detection
+        dmin = float('inf')
+        danger_dists = []
+        collision = False
+        
+        # Check if teammate is at goal and robot is close (or vice versa)
+        teammate_at_goal = False
+        robot_at_goal = False
+        teammate_close_to_goal = False
+        robot_close_to_goal = False
+        same_goal = False
+        
+        if len(self.humans) > 0:
+            teammate = self.humans[0]
+            # Check if both share the same goal (common goal scenario)
+            same_goal = (abs(teammate.gx - self.robot.gx) < 0.1 and 
+                        abs(teammate.gy - self.robot.gy) < 0.1)
+            
+            if same_goal:
+                # Check if teammate is at goal (within radius)
+                teammate_goal_dist = norm(np.array([teammate.px, teammate.py]) - np.array([teammate.gx, teammate.gy]))
+                teammate_at_goal = teammate_goal_dist < teammate.radius
+                teammate_close_to_goal = teammate_goal_dist < (teammate.radius * 1.0)  
+                
+                # Check if robot is at goal (within radius)
+                robot_goal_dist = norm(np.array(self.robot.get_position()) - np.array(self.robot.get_goal_position()))
+                robot_at_goal = robot_goal_dist < self.robot.radius
+                robot_close_to_goal = robot_goal_dist < (self.robot.radius * 1.0)  
+        
+        for i, human in enumerate(self.humans):
+            dx = human.px - self.robot.px
+            dy = human.py - self.robot.py
+            closest_dist = (dx ** 2 + dy ** 2) ** (1 / 2) - human.radius - self.robot.radius
+
+            if closest_dist < self.discomfort_dist:
+                danger_dists.append(closest_dist)
+            if closest_dist < 0:
+                collision = True
+                break
+            elif closest_dist < dmin:
+                dmin = closest_dist
+
+        # Check if reaching the goal (normal case)
+        reaching_goal = norm(np.array(self.robot.get_position()) - np.array(self.robot.get_goal_position())) < self.robot.radius
+        
+        # Simple solution: if one agent is at goal and other is close, mark as success
+        if same_goal and ((teammate_at_goal and robot_close_to_goal) or (robot_at_goal and teammate_close_to_goal)):
+            reaching_goal = True
+
+        if self.global_time >= self.time_limit - 1:
+            reward = 0
+            done = True
+            episode_info = Timeout()
+        elif collision:
+            reward = self.collision_penalty
+            done = True
+            episode_info = Collision()
+        elif reaching_goal:
+            reward = self.success_reward
+            done = True
+            episode_info = ReachGoal()
+        elif dmin < self.discomfort_dist:
+            # only penalize agent for getting too close if it's visible
+            reward = (dmin - self.discomfort_dist) * self.discomfort_penalty_factor * self.time_step
+            done = False
+            episode_info = Danger(dmin)
+        else:
+            # potential reward
+            potential_cur = np.linalg.norm(
+                np.array(self.robot.get_position()) - np.array(self.robot.get_goal_position()))
+            reward = 2 * (-abs(potential_cur) - self.potential)
+            self.potential = -abs(potential_cur)
+            done = False
+            episode_info = Nothing()
+
+        return reward, done, episode_info
 
     def _discrete_action_to_waypoint(self, a_idx: int):
         """
@@ -272,6 +365,9 @@ class CrowdSimAHT(CrowdSimDict):
 
         wx = float(self.robot.px + self.wp_dist * dx)
         wy = float(self.robot.py + self.wp_dist * dy)
+        # Clip waypoint to boundaries
+        wx = np.clip(wx, self.boundary_min, self.boundary_max)
+        wy = np.clip(wy, self.boundary_min, self.boundary_max)
         return wx, wy
 
 
@@ -279,6 +375,7 @@ class CrowdSimAHT(CrowdSimDict):
         """
         Build a JointState with the robot's goal temporarily set to (gx, gy),
         and use the local ORCA driver to compute a safe ActionXY toward it.
+        Excludes teammate from ORCA avoidance when both robot and teammate are near the goal.
         Requires:
             - from crowd_sim.envs.utils.state import JointState
             - self._orca_driver = ORCA(self.config)  (e.g., set in set_robot)
@@ -288,8 +385,29 @@ class CrowdSimAHT(CrowdSimDict):
         self_state.gx = float(gx)
         self_state.gy = float(gy)
 
-        # Observable human states
-        human_states = [h.get_observable_state() for h in self.humans]
+        # Check if teammate is at goal (exclude from ORCA to allow robot to approach)
+        teammate_at_goal = False
+        same_goal = False
+        
+        if len(self.humans) > 0:
+            teammate = self.humans[0]
+            # Check if both share the same goal
+            same_goal = (abs(teammate.gx - self.robot.gx) < 0.1 and 
+                        abs(teammate.gy - self.robot.gy) < 0.1)
+            
+            if same_goal:
+                # Check if teammate is at goal (within radius)
+                teammate_goal_dist = norm(np.array([teammate.px, teammate.py]) - np.array([teammate.gx, teammate.gy]))
+                teammate_at_goal = teammate_goal_dist < teammate.radius
+
+        # Observable human states - exclude teammate if teammate is at goal
+        # This allows robot to navigate directly to goal without ORCA avoiding the teammate
+        if teammate_at_goal and same_goal and len(self.humans) > 0:
+            # Exclude teammate (first human) from ORCA avoidance
+            human_states = [h.get_observable_state() for h in self.humans[1:]]
+        else:
+            # Include all humans (normal behavior)
+            human_states = [h.get_observable_state() for h in self.humans]
 
         # ORCA predict
         state = JointState(self_state, human_states)
@@ -442,14 +560,20 @@ class CrowdSimAHT(CrowdSimDict):
                     # Robot path as a short gray line
                     Line2D([], [], linestyle='-', color=path_color, linewidth=1.5, label='Robot path'),
 
-                    # Robot: yellow filled circle
-                    Circle((0, 0), radius=0.3, facecolor=robot_color, edgecolor='k', label='Robot'),
+                    # Robot: yellow filled circle (using marker='o' for proper circle display)
+                    Line2D([], [], linestyle='None', marker='o',
+                           markerfacecolor=robot_color, markeredgecolor='k',
+                           markersize=12, markeredgewidth=1, label='Robot'),
 
-                    # Teammate: empty circle with green outline
-                    Circle((0, 0), radius=0.3, fill=False, edgecolor='green', linewidth=1.5, label='Teammate'),
+                    # Teammate: empty circle with green outline (using marker='o' for proper circle display)
+                    Line2D([], [], linestyle='None', marker='o',
+                           markerfacecolor='none', markeredgecolor='green',
+                           markersize=12, markeredgewidth=2, label='Teammate'),
 
-                    # Background agent: empty circle with black outline
-                    Circle((0, 0), radius=0.3, fill=False, edgecolor='k', linewidth=1.0, label='Background agent'),
+                    # Background agent: empty circle with black outline (using marker='o' for proper circle display)
+                    Line2D([], [], linestyle='None', marker='o',
+                           markerfacecolor='none', markeredgecolor='k',
+                           markersize=12, markeredgewidth=1.5, label='Background agent'),
                 ]
 
                 ax.legend(handles=legend_handles,

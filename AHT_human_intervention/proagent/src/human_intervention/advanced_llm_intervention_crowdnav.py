@@ -68,9 +68,6 @@ class AgentMemory:
 			"teammate_model": {
 				"since_t": None,
 				"behavior_description": "",
-				"current_pattern": "",           # "direct_to_goal", "detour", "stationary"
-				"coordination_style": "",        # "independent", "coordinated", "conflicting"
-				"confidence": 0.0,
 			},
 			# Human/operator preferences or "house rules"
 			"human_prefs": {
@@ -80,16 +77,8 @@ class AgentMemory:
 			"playbook": [
 				# {"if": "crowd_ahead AND clear_alternative", "then": [2, 0, 3], "note": "detour around crowd"}
 			],
-			# Safety and throttles
-			"afford_safety": {"max_wait_on_pass": 2},
-			# Choke points or priority zones useful for pathing/avoidance
-			"hotspots": [],                      # [{"pos": [x,y], "type": "chokepoint", "risk": "high"}]
-			# Things to clarify when vague messages show up
-			"open_questions": [],
 			# Learned intervention patterns to avoid future human corrections
 			"intervention_patterns": [],
-			# Learned human intervention cards (LLM Match→Apply)
-			"playbook_cards": [],   # list[dict] of short, egocentric cards
 		}
 		self.episodic: List[Dict[str, Any]] = []
 		self._cap = episodic_cap
@@ -120,35 +109,16 @@ class AgentMemory:
 			return "No recent notable events."
 		return "Recent: " + "; ".join(notes[:8])
 
-	def debug_print_memory(self) -> None:
-		"""Print detailed memory contents for debugging."""
-		print("=" * 50)
-		print("MEMORY DEBUG - FULL CONTENTS")
-		print("=" * 50)
-		
-		print(f"\nEPISODIC MEMORY ({len(self.episodic)} entries):")
-		for i, entry in enumerate(self.episodic[-10:]):  # Last 10 entries
-			print(f"  {i}: {entry}")
-		
-		print(f"\nSEMANTIC MEMORY:")
-		for key, value in self.semantic.items():
-			print(f"  {key}: {value}")
-		
-		print("=" * 50)
-
 	def upsert_semantic(self, patch: Dict[str, Any]) -> None:
 		"""
 		Conservative merge of small dict patches from the model (after gating).
 		Only whitelisted top-level keys are merged.
 		"""
 		WHITELIST = {"navigation_patterns", "obstacle_memory", "teammate_model", "human_prefs",
-					 "playbook", "afford_safety", "hotspots", "open_questions"}
-		print(f"[MEMORY] upsert_semantic called with keys: {list(patch.keys())}")
+					 "playbook", "intervention_patterns"}
 		for k, v in patch.items():
 			if k not in WHITELIST:
-				print(f"[MEMORY] Skipping non-whitelisted key: {k}")
 				continue
-			print(f"[MEMORY] Applying patch for key: {k}")
 			if isinstance(v, list):
 				base = self.semantic.get(k, [])
 				base.extend(v)
@@ -164,20 +134,50 @@ class AgentMemory:
 					base = dedup[-16:]
 				self.semantic[k] = base
 			elif isinstance(v, dict) and isinstance(self.semantic.get(k, {}), dict):
-				# Deep merge for nested dicts
+				# Special handling for teammate_model to preserve behavior_description
+				if k == "teammate_model" and "behavior_description" in v:
+					# Update behavior description with since_t timestamp
+					pass  # since_t is already set in the write
+				# Deep merge for nested dicts like navigation_patterns
 				self._deep_merge(self.semantic[k], v)
 			else:
 				self.semantic[k] = v
 
 	def _merge_list_by_pos(self, dest: List[Dict[str, Any]], src: List[Dict[str, Any]], key="pos", cap=32):
 		"""Merge lists by position to avoid duplicates."""
-		idx = {tuple(it.get(key, [])): i for i, it in enumerate(dest) if key in it}
+		# Build index mapping position tuples to indices
+		idx = {}
+		for i, it in enumerate(dest):
+			if key in it:
+				val = it.get(key, [])
+				# Only create tuple if val is a list/tuple that can be converted
+				if isinstance(val, (list, tuple)):
+					try:
+						idx[tuple(val)] = i
+					except TypeError:
+						# Skip if value can't be converted to tuple (e.g., contains unhashable types)
+						pass
+		
+		# Merge source items
 		for it in src:
-			p = tuple(it.get(key, []))
-			if p in idx:
-				dest[idx[p]].update(it)
+			if key in it:
+				val = it.get(key, [])
+				if isinstance(val, (list, tuple)):
+					try:
+						p = tuple(val)
+						if p in idx:
+							dest[idx[p]].update(it)
+						else:
+							dest.append(it)
+					except TypeError:
+						# Skip if value can't be converted to tuple
+						dest.append(it)
+				else:
+					dest.append(it)
 			else:
 				dest.append(it)
+		
+		# Cap the list size
 		if len(dest) > cap:
 			del dest[:-cap]
 
@@ -199,40 +199,24 @@ class AgentMemory:
 		tm = sem["teammate_model"]
 		np = sem.get("navigation_patterns", {})
 		
+		# Keep short: last 2-3 key obstacle memories
+		key_obstacles = sem.get("obstacle_memory", [])[-3:]
+		
 		return {
 			"navigation_patterns": {
 				"preferred_directions": np.get("preferred_directions", [])[-5:],
 				"avoid_directions": np.get("avoid_directions", []),
 			},
-			"obstacle_memory": sem.get("obstacle_memory", [])[-5:],
+			"obstacle_memory": key_obstacles,
 			"teammate_model": {
 				"since_t": tm.get("since_t"),
 				"behavior_description": tm.get("behavior_description"),
-				"current_pattern": tm.get("current_pattern", ""),
-				"coordination_style": tm.get("coordination_style", ""),
 			},
-			"human_prefs": sem.get("human_prefs", {}),
-			"playbook": sem.get("playbook", [])[-4:],  # small slice
-			"afford_safety": sem.get("afford_safety", {}),
-			"hotspots": sem.get("hotspots", [])[-2:],
+			"playbook": sem.get("playbook", [])[-4:],  # Keep last 4 entries
 			"summary": self.summarize_recent(),
+			"intervention_patterns": sem.get("intervention_patterns", [])[-4:],  # Keep last 4 entries
 		}
 
-	def add_intervention_card(self, card: Dict[str, Any]) -> None:
-		cards = self.semantic.setdefault("playbook_cards", [])
-		cards.append(card)
-
-	def topk_cards(self, query_tokens: List[str], k: int = 5) -> List[Dict[str, Any]]:
-		"""Very simple lexical prefilter for candidate cards (keeps code tiny)."""
-		cards = self.semantic.get("playbook_cards", [])
-		scored = []
-		qset = {t.lower() for t in query_tokens}
-		for c in cards:
-			text = (c.get("title","") + " " + c.get("when_text","")).lower()
-			score = sum(1 for t in qset if t in text)
-			scored.append((score, c))
-		scored.sort(key=lambda x: x[0], reverse=True)
-		return [c for s, c in scored[:k] if s > 0]
 
 @dataclass
 class HumanMessage:
@@ -291,17 +275,17 @@ def _extract_first_json_object(text: str) -> Tuple[dict | None, str | None]:
 
 class LLMClient:
     """
-    Adapter around the OpenAI API using gpt-4.1-mini with enforced JSON mode.
+    Adapter around the OpenAI API using gpt-5-mini with enforced JSON mode.
     Falls back to heuristic extraction if response_format fails.
     """
 
-    def __init__(self, openai_client: Optional[OpenAI] = None, model: str = "gpt-4.1-mini"):
+    def __init__(self, openai_client: Optional[OpenAI] = None, model: str = "gpt-5-mini"):
         self.client = openai_client or OpenAI()
         self.model = model
 
     def respond_json(self, schema: Dict[str, Any], system: str, user: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Request structured JSON output from GPT-4.1-mini.
+        Request structured JSON output from GPT-5-mini.
         Returns parsed dict or raises ValueError with raw LLM text on failure.
         """
         try:
@@ -312,8 +296,8 @@ class LLMClient:
                     {"role": "user", "content": json.dumps(user, ensure_ascii=False)}
                 ],
                 response_format={"type": "json_object"},
-                temperature=0.1,
-                max_completion_tokens=2048,
+                max_completion_tokens=2048,  
+				reasoning_effort="low",
             )
 
             try:
@@ -321,104 +305,99 @@ class LLMClient:
             except Exception:
                 text_out = getattr(response, "choices", [{}])[0].get("message", {}).get("content", None) or str(response)
 
-            if not text_out:
-                raise ValueError(f"No text content in response: {response}")
+            # Handle empty response (e.g., hit token limit)
+            if not text_out or not text_out.strip():
+                finish_reason = getattr(response.choices[0], "finish_reason", None) if response.choices else None
+                if finish_reason == "length":
+                    print(f"[LLM-WARNING] Response hit token limit ({response.usage.completion_tokens if hasattr(response, 'usage') else 'unknown'} tokens), using fallback")
+                else:
+                    print(f"[LLM-WARNING] Empty response (finish_reason: {finish_reason}), using fallback")
+                # Return fallback plan
+                obj = {
+                    "steps": [0],
+                    "chain_of_thought": "Response was truncated or empty, using safe fallback",
+                    "category": "vague",
+                    "teammate_behavior": "",
+                    "memory_writes": [],
+                    "low_level_override": None,
+                    "intervention_reason": ""
+                }
+                # Skip to validation (will pass since we set all required fields)
+                text_out = None  # Signal that we already have obj
 
-            try:
-                obj = json.loads(text_out)
-            except json.JSONDecodeError as e:
-                obj, err = _extract_first_json_object(text_out)
-                if obj is None:
-                    if "Unterminated string" in str(e) or "No JSON object found" in str(err):
-                        print(f"[LLM-WARNING] Response appears truncated, using fallback")
-                        obj = {
-                            "steps": [0],
-                            "chain_of_thought": "Response was truncated, using safe fallback",
-                            "category": "vague",
-                            "teammate_behavior": "",
-                            "memory_writes": [],
-                            "low_level_override": None,
-                            "intervention_reason": ""
-                        }
-                    else:
-                        raise ValueError(f"Could not parse JSON: {err}\nRaw: {text_out}")
+            # Parse JSON if we haven't already created a fallback obj
+            if text_out is not None:
+                try:
+                    obj = json.loads(text_out)
+                except json.JSONDecodeError as e:
+                    obj, err = _extract_first_json_object(text_out)
+                    if obj is None:
+                        if "Unterminated string" in str(e) or "No JSON object found" in str(err):
+                            print(f"[LLM-WARNING] Response appears truncated, using fallback")
+                            obj = {
+                                "steps": [0],
+                                "chain_of_thought": "Response was truncated, using safe fallback",
+                                "category": "vague",
+                                "teammate_behavior": "",
+                                "memory_writes": [],
+                                "low_level_override": None,
+                                "intervention_reason": ""
+                            }
+                        else:
+                            raise ValueError(f"Could not parse JSON: {err}\nRaw: {text_out}")
             
             print(f"[LLM-DEBUG] Raw LLM response: {obj}")
             
-            # Validate against schema and repair if needed
+            # Remove any properties not in the schema
+            # This is necessary because the schema has additionalProperties: False
+            allowed_properties = set(schema.get("properties", {}).keys())
+            obj = {k: v for k, v in obj.items() if k in allowed_properties}
+            
+            # Repair common issues before validation
+            # Ensure required fields exist FIRST (before validation)
+            obj.setdefault("steps", [0])
+            
+            # Fix category field - ensure it's always a valid enum value
+            category = obj.get("category", "vague")
+            if not category or category.strip() == "" or category not in ["policy", "env", "teammate", "vague"]:
+                obj["category"] = "vague"
+            if "chain_of_thought" in allowed_properties:
+                obj.setdefault("chain_of_thought", "No chain of thought provided")
+            obj.setdefault("teammate_behavior", "")
+            if "memory_writes" in allowed_properties:
+                obj.setdefault("memory_writes", [])
+            if "low_level_override" in allowed_properties:
+                obj.setdefault("low_level_override", None)
+            if "intervention_reason" in allowed_properties:
+                obj.setdefault("intervention_reason", "")
+            
+            # Truncate fields that have maxLength constraints before validation
+            if "chain_of_thought" in obj and isinstance(obj["chain_of_thought"], str):
+                obj["chain_of_thought"] = obj["chain_of_thought"][:512]  # Match schema maxLength
+            if "teammate_behavior" in obj and isinstance(obj["teammate_behavior"], str):
+                obj["teammate_behavior"] = obj["teammate_behavior"][:220]  # Match schema maxLength
+            if "intervention_reason" in obj and isinstance(obj["intervention_reason"], str):
+                obj["intervention_reason"] = obj["intervention_reason"][:300]  # Match schema maxLength
+            
+            # Validate against schema
             try:
                 validate(instance=obj, schema=schema)
-            except ValidationError as ve:
-                print(f"[LLM-DEBUG] Validation error: {ve}")
-                print(f"[LLM-DEBUG] Problematic object: {obj}")
-                # Minimal repair for required fields
-                obj.setdefault("steps", [0])
-                obj.setdefault("chain_of_thought", "Emergency repair: executing default action")
-                
-                category = obj.get("category", "vague")
-                if not category or category not in ["policy", "env", "teammate", "vague"]:
-                    obj["category"] = "vague"
-                
-                obj.setdefault("teammate_behavior", "")
-                obj.setdefault("memory_writes", [])
-                obj.setdefault("low_level_override", None)
-                obj.setdefault("intervention_reason", "")
-                
-                obj["chain_of_thought"] = obj.get("chain_of_thought") or obj.get("brief_rationale","")
-                
-                validate(instance=obj, schema=schema)
+            except ValidationError as e:
+                raise ValueError(f"JSON did not match schema: {e.message}. Parsed: {obj!r}")
             
-            obj["chain_of_thought"] = obj.get("chain_of_thought") or obj.get("brief_rationale","")
-            
+            print(f"[LLM-DEBUG] Parsed: {obj}")
             return obj
 
         except Exception as e:
             raise RuntimeError(f"LLMClient.respond_json failed: {e}")
 
-    def match_apply(self, system: str, user: str) -> Dict[str, Any]:
-        """Run the Match→Apply card matching prompt and return parsed JSON."""
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        rules_file = os.path.join(script_dir, "advanced_llm_system_rules_crowdnav.txt")
-        try:
-            with open(rules_file, 'r', encoding='utf-8') as f:
-                full_rules = f.read()
-            match_section_start = full_rules.find("MATCH→APPLY CONTROLLER (CARD MATCHING)")
-            if match_section_start >= 0:
-                system_text = full_rules[match_section_start:]
-            else:
-                system_text = system
-        except Exception:
-            system_text = system
-        
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_text},
-                    {"role": "user", "content": user}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                max_completion_tokens=512,
-            )
-            text_out = response.choices[0].message.content
-            obj = json.loads(text_out)
-            return obj
-        except Exception as e:
-            print(f"[LLM-WARNING] Match→Apply failed: {e}")
-            return {
-                "matched_card_id": None,
-                "similarity_reason": "Error in matching",
-                "apply": False,
-                "low_level_override": None,
-                "keep_medium_plan": True,
-                "cooldown": 0
-            }
-
 
 # JSON Schema for Plan output
 PLAN_JSON_SCHEMA = {
+	"$schema": "http://json-schema.org/draft-07/schema#",
 	"type": "object",
+	"additionalProperties": False,
+	"required": ["steps", "chain_of_thought", "category", "teammate_behavior"],
 	"properties": {
 		"steps": {
 			"type": "array",
@@ -426,21 +405,25 @@ PLAN_JSON_SCHEMA = {
 			"minItems": 1,
 			"maxItems": 3,
 		},
-		"chain_of_thought": {"type": "string"},
-		"category": {"type": "string", "enum": ["policy", "env", "teammate", "vague", ""]},
-		"teammate_behavior": {"type": "string"},
+		"chain_of_thought": {"type": "string", "maxLength": 512}, 
+		"category": {"type": "string", "enum": ["policy", "env", "teammate", "vague"]},
+		"teammate_behavior": {"type": "string", "maxLength": 220},
 		"memory_writes": {
 			"type": "array",
 			"items": {"type": "object"},
+			"default": []
 		},
 		"low_level_override": {
 			"type": ["integer", "null"],
 			"enum": [0, 1, 2, 3, 4, 5, 6, 7, None],
+			"default": None
 		},
-		"intervention_reason": {"type": "string"},
+		"intervention_reason": {
+			"type": "string",
+			"maxLength": 300,
+			"default": ""
+		},
 	},
-	"required": ["steps", "chain_of_thought", "category", "teammate_behavior", "memory_writes", "low_level_override", "intervention_reason"],
-	"additionalProperties": False,
 }
 
 
@@ -450,7 +433,7 @@ class AdvancedLLMInterpreter:
 	Uses LLM to generate structured plans from text observations and human messages.
 	"""
 	
-	def __init__(self, llm_client: LLMClient, memory: AgentMemory, history_horizon: int = 8):
+	def __init__(self, llm_client: LLMClient, memory: AgentMemory, history_horizon: int = 6):
 		self.llm = llm_client
 		self.memory = memory
 		self.history_horizon = history_horizon
@@ -494,22 +477,7 @@ class AdvancedLLMInterpreter:
 		if human_message:
 			user_prompt["human_message"] = human_message
 		
-		# Call LLM
-		try:
-			raw_plan = self.llm.respond_json(PLAN_JSON_SCHEMA, self.system_rules, user_prompt)
-		except Exception as e:
-			print(f"[INTERPRETER-ERROR] LLM call failed: {e}")
-			# Fallback plan
-			raw_plan = {
-				"steps": [0],
-				"chain_of_thought": f"Error in interpretation: {e}",
-				"category": "vague",
-				"teammate_behavior": "",
-				"memory_writes": [],
-				"low_level_override": None,
-				"intervention_reason": "",
-			}
-		
+		raw_plan = self.llm.respond_json(PLAN_JSON_SCHEMA, self.system_rules, user_prompt)
 		# Apply memory writes
 		for write in raw_plan.get("memory_writes", []):
 			self.memory.upsert_semantic(write)
