@@ -191,3 +191,151 @@ Press **P** to enter intervention mode, then type a command and press **Enter**.
 - `"Focus on cooking onions first"`
 - `"Help your teammate by delivering soup"`
 - `"You seem to be stuck for a while"`
+
+---
+
+# CrowdNav Demo - Simulation Guide
+
+This guide explains how to run the CrowdNav-AHT demo simulation, which features a robot navigating through a crowd of humans with AI intervention capabilities.
+
+## Prerequisites
+
+The CrowdNav demo shares the same prerequisites as the ProAgent demo:
+- macOS (recommended) or Linux
+- Conda (miniforge3 recommended)
+- OpenAI API key (same setup as Step 2 above)
+
+## Running the CrowdNav Demo
+
+Navigate to the demos directory and run the script:
+
+```bash
+cd AHT_human_intervention/demos
+python crowdnav_demo.py
+```
+
+### Command-Line Arguments
+
+You can customize the demo with the following arguments:
+
+#### Horizon (Episode Length)
+
+Set the maximum number of steps in the episode:
+
+```bash
+python crowdnav_demo.py --horizon <number>
+```
+
+Default: `200` steps
+
+#### Random Seed
+
+Set the random seed for environment initialization:
+
+```bash
+python crowdnav_demo.py --seed <number>
+```
+
+Default: `6`
+
+#### Background Agent Configuration
+
+Control the simulation environment parameters:
+
+**Number of humans (total, includes teammate + background agents):**
+```bash
+python crowdnav_demo.py --human_num <number>
+```
+Default: `4`
+
+**Human number variation range:**
+```bash
+python crowdnav_demo.py --human_num_range <number>
+```
+Actual number will be (human_num - range) to (human_num + range). Default: `2`
+
+**Circle radius (meters) - starting area:**
+```bash
+python crowdnav_demo.py --circle_radius <float>
+```
+Default: `6.0` meters
+
+**Human agent radius (meters):**
+```bash
+python crowdnav_demo.py --human_radius <float>
+```
+Default: `0.3` meters
+
+**Human maximum velocity (m/s):**
+```bash
+python crowdnav_demo.py --human_v_pref <float>
+```
+Default: `1.0` m/s
+
+**Robot radius (meters):**
+```bash
+python crowdnav_demo.py --robot_radius <float>
+```
+Default: `0.3` meters
+
+**Robot maximum velocity (m/s):**
+```bash
+python crowdnav_demo.py --robot_v_pref <float>
+```
+Default: `1.0` m/s
+
+### Example Commands
+
+**Basic run with defaults:**
+```bash
+python crowdnav_demo.py
+```
+
+**Custom horizon and seed:**
+```bash
+python crowdnav_demo.py --horizon 300 --seed 42
+```
+
+**Customized environment:**
+```bash
+python crowdnav_demo.py --human_num 6 --circle_radius 8.0 --human_v_pref 1.5
+```
+
+**Full customization:**
+```bash
+python crowdnav_demo.py --horizon 500 --seed 10 --human_num 5 --human_num_range 1 --circle_radius 7.0 --robot_v_pref 1.2
+```
+
+## CrowdNav Demo Controls
+
+Once the simulation window opens, you can use the following controls:
+
+- **P** - Pause/resume simulation and enter intervention mode
+- **ESC** - Quit the simulation
+
+### Providing Interventions
+
+1. Press **P** to pause the simulation
+2. Type your intervention command (e.g., `"Avoid the crowded area to the left"`)
+3. Press **Enter** to apply the intervention and resume the simulation
+4. Press **ESC** while typing to cancel the intervention
+
+Example interventions:
+
+- `"Avoid the crowded area to the left"`
+- `"Take a more direct path to the goal"`
+- `"Slow down and wait for the humans to pass"`
+- `"You're getting too close to the humans"`
+
+The demo displays real-time information including:
+- Current step number
+- Chain-of-thought reasoning
+- Intervention reasons
+- Action plans
+- Current action being taken
+
+The visualization shows:
+- Robot position and trajectory (in red)
+- Human agent positions and trajectories (in blue)
+- Goal location
+- Obstacles and environment boundaries
