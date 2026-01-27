@@ -30,6 +30,14 @@ class Collision(object):
         return 'Collision'
 
 
+class CoordinationFailure(object):
+    def __init__(self, reason='Coordination failure'):
+        self.reason = reason
+
+    def __str__(self):
+        return self.reason
+
+
 class Nothing(object):
     def __init__(self):
         pass

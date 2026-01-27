@@ -25,6 +25,17 @@ class CrowdSimAHT(CrowdSimDict):
         # Boundary limits (matches render bounds)
         self.boundary_min = -10.0
         self.boundary_max = 10.0
+        # Cooperative meeting configuration (optional)
+        self.meeting_locations = None
+        self.meeting_radius = None
+        self.step_limit = None
+        self.episode_step = 0
+        self._arrival_steps = {
+            "robot": None,
+            "robot_loc": None,
+            "teammate": None,
+            "teammate_loc": None
+        }
 
     # --- inside class CrowdSimAHT(CrowdSimDict) ---
     def set_robot(self, robot):
@@ -124,9 +135,27 @@ class CrowdSimAHT(CrowdSimDict):
         else:
             desc.append("There is no teammate in the scene.")
 
-        desc.append(
-            f"The common goal for both the robot and teammate is at x = {common_gx:.2f} meters, y = {common_gy:.2f} meters."
-        )
+        if self.meeting_locations:
+            (m1x, m1y), (m2x, m2y) = self.meeting_locations
+            desc.append(
+                f"There are two candidate meeting locations at x = {m1x:.2f}, y = {m1y:.2f} "
+                f"and x = {m2x:.2f}, y = {m2y:.2f}."
+            )
+            desc.append(
+                f"The robot's current target is at x = {r_gx:.2f} meters, y = {r_gy:.2f} meters."
+            )
+            if teammate_dict is not None:
+                desc.append(
+                    f"The teammate's current target is at x = {tm.gx:.2f} meters, y = {tm.gy:.2f} meters."
+                )
+            if self.step_limit is not None:
+                desc.append(
+                    f"The episode has a fixed {int(self.step_limit)}-step time limit."
+                )
+        else:
+            desc.append(
+                f"The common goal for both the robot and teammate is at x = {common_gx:.2f} meters, y = {common_gy:.2f} meters."
+            )
 
         if len(others_list) == 0:
             desc.append("There are no other background agents nearby.")
@@ -156,6 +185,17 @@ class CrowdSimAHT(CrowdSimDict):
         for i in range(human_num - 1):
             self.humans.append(self.generate_circle_crossing_human())
 
+    def reset(self, phase='train', test_case=None):
+        ob = super().reset(phase=phase, test_case=test_case)
+        self.episode_step = 0
+        self._arrival_steps = {
+            "robot": None,
+            "robot_loc": None,
+            "teammate": None,
+            "teammate_loc": None
+        }
+        return ob
+
 
     # step function
     def step(self, action, update=True):
@@ -164,6 +204,41 @@ class CrowdSimAHT(CrowdSimDict):
         until the robot reaches the waypoint (within self.wp_reach_eps) or we hit
         the sub-step timeout (self.wp_timeout_steps).
         """
+        # Allow direct continuous control via ActionXY or (vx, vy) tuple
+        if isinstance(action, ActionXY) or (
+            isinstance(action, (tuple, list, np.ndarray)) and len(action) == 2
+        ):
+            if isinstance(action, ActionXY):
+                orca_action = action
+            else:
+                vx, vy = float(action[0]), float(action[1])
+                orca_action = ActionXY(vx, vy)
+
+            last_reward = 0.0
+            last_done = False
+            last_episode_info = {}
+
+            # Single-step apply of direct velocity
+            human_actions = self.get_human_actions()
+            reward, done, episode_info = self.calc_reward(orca_action)
+            last_reward, last_done, last_episode_info = reward, done, episode_info
+
+            self.robot.step(orca_action)
+            for i, human_action in enumerate(human_actions):
+                self.humans[i].step(human_action)
+            self.robot.px = np.clip(self.robot.px, self.boundary_min, self.boundary_max)
+            self.robot.py = np.clip(self.robot.py, self.boundary_min, self.boundary_max)
+            for human in self.humans:
+                human.px = np.clip(human.px, self.boundary_min, self.boundary_max)
+                human.py = np.clip(human.py, self.boundary_min, self.boundary_max)
+            self.global_time += self.time_step
+
+            ob = self.generate_ob(reset=False)
+            info = {'info': last_episode_info}
+            self._last_selected_waypoint = None
+            self.episode_step += 1
+            return ob, last_reward, last_done, info
+
         # Translate discrete action -> waypoint coordinates
         if isinstance(action, (int, np.integer)) or (hasattr(action, 'shape') and getattr(action, 'shape', None) == ()):
             a_idx = int(action)
@@ -175,7 +250,6 @@ class CrowdSimAHT(CrowdSimDict):
                 a_idx = int(action)
 
         wx, wy = self._discrete_action_to_waypoint(a_idx)
-        print(wx, wy)
 
         last_reward = 0.0
         last_done = False
@@ -243,6 +317,9 @@ class CrowdSimAHT(CrowdSimDict):
         # Save the currently selected waypoint so render() can show it
         self._last_selected_waypoint = (wx, wy)
 
+        # Count high-level steps for coordination time limit
+        self.episode_step += 1
+
         return ob, last_reward, last_done, info
 
     def calc_reward(self, action):
@@ -250,7 +327,7 @@ class CrowdSimAHT(CrowdSimDict):
         Override calc_reward to allow robot to reach goal when teammate is at goal.
         Simple solution: if one agent is at the goal and the other is sufficiently close, mark as success.
         """
-        from crowd_sim.envs.utils.info import ReachGoal, Collision, Danger, Timeout, Nothing
+        from crowd_sim.envs.utils.info import ReachGoal, Collision, Danger, Timeout, Nothing, CoordinationFailure
         
         # collision detection
         dmin = float('inf')
@@ -301,7 +378,54 @@ class CrowdSimAHT(CrowdSimDict):
         if same_goal and ((teammate_at_goal and robot_close_to_goal) or (robot_at_goal and teammate_close_to_goal)):
             reaching_goal = True
 
-        if self.global_time >= self.time_limit - 1:
+        meeting_success = False
+        meeting_failure = False
+        meeting_failure_reason = None
+        meeting_locations = self.meeting_locations or []
+
+        if meeting_locations and len(self.humans) > 0:
+            teammate = self.humans[0]
+            meeting_radius = self.meeting_radius or max(self.robot.radius, teammate.radius)
+
+            def arrival_location(agent):
+                for idx, (mx, my) in enumerate(meeting_locations):
+                    dist = norm(np.array([agent.px, agent.py]) - np.array([mx, my]))
+                    if dist <= meeting_radius:
+                        return idx
+                return None
+
+            robot_loc = arrival_location(self.robot)
+            teammate_loc = arrival_location(teammate)
+
+            if robot_loc is not None and self._arrival_steps["robot"] is None:
+                self._arrival_steps["robot"] = self.episode_step
+                self._arrival_steps["robot_loc"] = robot_loc
+            if teammate_loc is not None and self._arrival_steps["teammate"] is None:
+                self._arrival_steps["teammate"] = self.episode_step
+                self._arrival_steps["teammate_loc"] = teammate_loc
+
+            if (self._arrival_steps["robot"] is not None and
+                    self._arrival_steps["teammate"] is not None):
+                if self._arrival_steps["robot_loc"] != self._arrival_steps["teammate_loc"]:
+                    meeting_failure = True
+                    meeting_failure_reason = "Agents committed to different meeting locations"
+                else:
+                    step_diff = abs(self._arrival_steps["robot"] - self._arrival_steps["teammate"])
+                    if step_diff <= 1:
+                        meeting_success = True
+                    else:
+                        meeting_failure = True
+                        meeting_failure_reason = "Arrival-time difference exceeded one step"
+            # In meeting-location mode, only coordination success should end the episode as goal-reaching
+            reaching_goal = False
+
+        time_limit_reached = False
+        if self.step_limit is not None:
+            time_limit_reached = self.episode_step >= self.step_limit
+        else:
+            time_limit_reached = self.global_time >= self.time_limit - 1
+
+        if time_limit_reached:
             reward = 0
             done = True
             episode_info = Timeout()
@@ -309,6 +433,14 @@ class CrowdSimAHT(CrowdSimDict):
             reward = self.collision_penalty
             done = True
             episode_info = Collision()
+        elif meeting_failure:
+            reward = 0
+            done = True
+            episode_info = CoordinationFailure(meeting_failure_reason or "Coordination failure")
+        elif meeting_success:
+            reward = self.success_reward
+            done = True
+            episode_info = ReachGoal()
         elif reaching_goal:
             reward = self.success_reward
             done = True
@@ -400,9 +532,21 @@ class CrowdSimAHT(CrowdSimDict):
                 teammate_goal_dist = norm(np.array([teammate.px, teammate.py]) - np.array([teammate.gx, teammate.gy]))
                 teammate_at_goal = teammate_goal_dist < teammate.radius
 
-        # Observable human states - exclude teammate if teammate is at goal
+        # Observable human states - exclude teammate if overlapping at goal is allowed
         # This allows robot to navigate directly to goal without ORCA avoiding the teammate
-        if teammate_at_goal and same_goal and len(self.humans) > 0:
+        allow_overlap = False
+        if len(self.humans) > 0:
+            if teammate_at_goal and same_goal:
+                allow_overlap = True
+            elif self.meeting_locations:
+                meeting_radius = self.meeting_radius or max(self.robot.radius, self.humans[0].radius)
+                for mx, my in self.meeting_locations:
+                    teammate_dist = np.hypot(self.humans[0].px - mx, self.humans[0].py - my)
+                    robot_dist = np.hypot(self.robot.px - mx, self.robot.py - my)
+                    if teammate_dist <= meeting_radius and robot_dist <= (meeting_radius * 1.5):
+                        allow_overlap = True
+                        break
+        if allow_overlap and len(self.humans) > 0:
             # Exclude teammate (first human) from ORCA avoidance
             human_states = [h.get_observable_state() for h in self.humans[1:]]
         else:
@@ -451,6 +595,7 @@ class CrowdSimAHT(CrowdSimDict):
         human_edge = 'k'
         waypoint_color = 'blue'
         goal_color = 'red'
+        meeting_colors = ['orange', 'purple']
         path_color = 'gray'
         arrow_style = patches.ArrowStyle("->", head_length=4, head_width=2)
 
@@ -471,9 +616,14 @@ class CrowdSimAHT(CrowdSimDict):
             ax.set_xlim(*xlim)
             ax.set_ylim(*ylim)
 
-            # Goal
-            ax.plot([self.robot.gx], [self.robot.gy], marker='*', color=goal_color,
-                    markersize=14, label="Goal" if i == 0 else None)
+            # Meeting locations (if configured)
+            if self.meeting_locations:
+                for mi, (mx, my) in enumerate(self.meeting_locations[:2]):
+                    color = meeting_colors[mi % len(meeting_colors)]
+                    ax.plot([mx], [my], marker='*', color=color, markersize=14,
+                            label=f"Meeting {mi + 1}" if i == 0 else None)
+
+            # Goal (current target) intentionally hidden in UI
 
             # Robot trail up to current frame
             r_px, r_py, r_r, r_theta = f["robot"]
@@ -503,20 +653,11 @@ class CrowdSimAHT(CrowdSimDict):
             rhy = r_py + r_r * np.sin(robot_heading)
             ax.add_patch(patches.FancyArrowPatch((r_px, r_py), (rhx, rhy), color='red', arrowstyle=arrow_style))
 
-            # Humans: circle, heading arrow, and number label (1..N)
+            # Humans: circle and heading arrow
             for hi, _ in enumerate(self.humans):
                 if hi < len(f["humans"]):
                     h_px, h_py, h_r, h_theta = f["humans"][hi]
-
-                    # --- Teammate (0-th human) uses a distinct color ---
-                    if hi == 0:
-                        human_edge = 'green'  # outline color
-                        arrow_color = 'green'  # heading arrow color
-                        text_color = 'green'  # label color
-                    else:
-                        human_edge = 'k'
-                        arrow_color = 'black'
-                        text_color = 'k'
+                    arrow_color = 'black'
 
                     # Circle outline
                     h_disc = plt.Circle((h_px, h_py), h_r, fill=False, ec=human_edge, lw=1.5)
@@ -534,11 +675,6 @@ class CrowdSimAHT(CrowdSimDict):
                         )
                     )
 
-                    # Number label at the center
-                    ax.text(h_px, h_py, str(hi + 1),
-                            ha='center', va='center',
-                            fontsize=9, color=text_color, weight='bold')
-
             # Waypoint marker for the current micro-step (if any)
             if f.get("waypoint") is not None:
                 wx, wy = f["waypoint"]
@@ -547,12 +683,17 @@ class CrowdSimAHT(CrowdSimDict):
 
             # Legend (build once; labels may be None on later frames)
             if i == 0:
-                legend_handles = [
-                    # Goal as a red star
-                    Line2D([], [], linestyle='None', marker='*',
-                           markerfacecolor=goal_color, markeredgecolor=goal_color,
-                           markersize=12, label='Goal'),
-
+                legend_handles = []
+                if self.meeting_locations:
+                    legend_handles.extend([
+                        Line2D([], [], linestyle='None', marker='*',
+                               markerfacecolor=meeting_colors[0], markeredgecolor=meeting_colors[0],
+                               markersize=12, label='Meeting 1'),
+                        Line2D([], [], linestyle='None', marker='*',
+                               markerfacecolor=meeting_colors[1], markeredgecolor=meeting_colors[1],
+                               markersize=12, label='Meeting 2'),
+                    ])
+                legend_handles.extend([
                     # Waypoint as a blue 'x'
                     Line2D([], [], linestyle='None', marker='x',
                            color=waypoint_color, markersize=10, label='Waypoint'),
@@ -564,17 +705,7 @@ class CrowdSimAHT(CrowdSimDict):
                     Line2D([], [], linestyle='None', marker='o',
                            markerfacecolor=robot_color, markeredgecolor='k',
                            markersize=12, markeredgewidth=1, label='Robot'),
-
-                    # Teammate: empty circle with green outline (using marker='o' for proper circle display)
-                    Line2D([], [], linestyle='None', marker='o',
-                           markerfacecolor='none', markeredgecolor='green',
-                           markersize=12, markeredgewidth=2, label='Teammate'),
-
-                    # Background agent: empty circle with black outline (using marker='o' for proper circle display)
-                    Line2D([], [], linestyle='None', marker='o',
-                           markerfacecolor='none', markeredgecolor='k',
-                           markersize=12, markeredgewidth=1.5, label='Background agent'),
-                ]
+                ])
 
                 ax.legend(handles=legend_handles,
                           loc='upper right', fontsize=10,

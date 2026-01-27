@@ -418,7 +418,6 @@ class SimpleHandcodedAgentHumanGuidance:
             # Debug soup state if holding soup
             if ego_item == "soup" and ego.has_object():
                 soup_obj = ego.get_object()
-                print(f"[SOUP_DEBUG] {self.agent_name} holding soup: {soup_obj}")
             
             if ego_item == "soup":
                 print(f"[HMS] {self.agent_name} holding soup - selecting SERVE_SOUP macro")

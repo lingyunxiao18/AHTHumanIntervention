@@ -2,15 +2,19 @@
 import os
 import sys
 import argparse
+import atexit
 import pygame
 import time
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 HINTAGENT_SRC = os.path.abspath(os.path.join(PROJECT_ROOT, 'hintagent', 'src'))
+PROAGENT_SRC = os.path.abspath(os.path.join(PROJECT_ROOT, 'hintagent', 'proagent', 'src'))
 # Ensure HINT-Agent src takes precedence so we import the right modules
 if HINTAGENT_SRC in sys.path:
     sys.path.remove(HINTAGENT_SRC)
 sys.path.insert(0, HINTAGENT_SRC)
+if PROAGENT_SRC not in sys.path:
+    sys.path.insert(0, PROAGENT_SRC)
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
@@ -62,6 +66,48 @@ def convert_action(a):
     return Action.STAY
 
 
+class TeeStream:
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            stream.write(data)
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+
+def setup_stdout_logging(enabled: bool, log_path: str, log_dir: str, prefix: str) -> None:
+    if not enabled and not log_path:
+        return
+    if log_path:
+        path = log_path
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    else:
+        os.makedirs(log_dir, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(log_dir, f"{prefix}_{ts}.log")
+
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    log_fp = open(path, "a")
+    sys.stdout = TeeStream(sys.stdout, log_fp)
+    sys.stderr = TeeStream(sys.stderr, log_fp)
+
+    def _cleanup():
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        try:
+            log_fp.close()
+        except Exception:
+            pass
+
+    atexit.register(_cleanup)
+    print(f"📄 Logging stdout/stderr to {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='HINT-Agent Demo')
     parser.add_argument('--layout', type=str, default='counter_circuit', help='Layout key (mapped via NEW_LAYOUTS)')
@@ -84,7 +130,28 @@ def main():
         action='store_true',
         help='Disable memory module (ablation study)'
     )
+    parser.add_argument('--ego_variant', type=str, default=None,
+                        help='Override ego variant label (ProAgent, YAY, CoT, HINT)')
+    parser.add_argument('--participant_id', type=str, default='P000')
+    parser.add_argument('--title_teammate', type=str, default=None,
+                        help='Optional teammate label for the window title')
+    parser.add_argument('--title_layout', type=str, default=None,
+                        help='Optional layout label for the window title')
+    parser.add_argument('--log', action='store_true', help='Mirror stdout/stderr to a log file')
+    parser.add_argument('--log_path', type=str, default=None, help='Optional log file path')
+    parser.add_argument('--log_dir', type=str, default='run_logs', help='Directory for auto log files')
     args = parser.parse_args()
+
+    setup_stdout_logging(args.log, args.log_path, args.log_dir, "overcooked_stdout")
+
+    def infer_ego_variant(no_cot: bool, no_memory: bool) -> str:
+        if no_cot and no_memory:
+            return "ProAgent"
+        if no_cot and not no_memory:
+            return "YAY"
+        if not no_cot and no_memory:
+            return "CoT"
+        return "HINT"
 
     layout = args.layout
     # Layout name mapping
@@ -121,20 +188,37 @@ def main():
     MLAM_PARAMS["counter_pickup"] = counter_locations
     mlam = MediumLevelPlanner.from_pickle_or_compute(mdp, MLAM_PARAMS, force_compute=True).ml_action_manager
     
-    # Create HINTAgent using the MLAM
-    # Ablation study options: control CoT and memory separately
     enable_cot = not args.no_cot
     enable_memory = not args.no_memory
-    p0 = HINTAgent(
-        mlam,
-        layout,
-        model='gpt-5-mini',
-        enable_cot=enable_cot,
-        enable_memory=enable_memory,
-    )
+    ego_variant = args.ego_variant or infer_ego_variant(args.no_cot, args.no_memory)
+
+    if ego_variant.lower() == "proagent":
+        from proagent.proagent import ProMediumLevelAgent
+        p0 = ProMediumLevelAgent(
+            mlam,
+            layout,
+            model='gpt-5-mini',
+            debug_mode='N',
+            agent_index=0,
+        )
+        p0.set_agent_index(0)
+    else:
+        # Create HINTAgent using the MLAM (supports CoT/memory ablations)
+        p0 = HINTAgent(
+            mlam,
+            layout,
+            model='gpt-5-mini',
+            enable_cot=enable_cot,
+            enable_memory=enable_memory,
+        )
 
     # Map teammate argument to agent constructors
     teammate_key = (args.teammate or 'onion_specialist').strip().lower()
+    title_layout = args.title_layout or layout_name
+    title_teammate = args.title_teammate or teammate_key
+    pygame.display.set_caption(
+        f"Overcooked | participant={args.participant_id} | ego={ego_variant} | layout={title_layout} | teammate={title_teammate}"
+    )
     teammate_map = {
         'onion_specialist': lambda mdp: OnionSpecialistAgent(mdp, agent_idx=1, agent_name='OnionSpec'),
         'dish_specialist': lambda mdp: DishSpecialistAgent(mdp, agent_idx=1, agent_name='DishSpec'),
@@ -165,7 +249,7 @@ def main():
     print("📋 Interpreter Configuration:")
     print(f"   - Chain-of-Thought (CoT): {'ENABLED' if enable_cot else 'DISABLED'}")
     print(f"   - Memory Module: {'ENABLED' if enable_memory else 'DISABLED'}")
-    print("   - Plan categorization (policy/env/teammate/vague)")
+    print("   - Plan categorization (policy/env/teammate/general_hint)")
     print("   - Structured rationale output")
     if enable_memory:
         print("   - Memory persistence across interventions")
@@ -175,7 +259,6 @@ def main():
     print("🎮 Controls:")
     print("   - SPACE: Pause/Resume")
     print("   - P: Start intervention (type command)")
-    print("   - M: Print memory state (debug)")
     print("   - ESC: Quit")
     print("")
     print("💡 Example interventions to try:")
@@ -184,6 +267,7 @@ def main():
     print("   - 'Avoid blocking the center area'")
     print("   - 'Pick up more onions from the left dispenser'")
     print("")
+
 
     state = env.state
     step = 0
@@ -269,14 +353,17 @@ def main():
                             # Use the advanced intervention system
                             try:
                                 print(f"🎯 Applying intervention: '{cmd}'")
-                                success = p0.process_human_intervention(cmd)
-                                if success:
-                                    print(f"✅ Intervention processed: '{cmd}'")
-                                    # Show intervention stats after processing
-                                    stats = p0.get_intervention_stats()
-                                    print(f"📊 Agent stats after intervention: {stats}")
+                                if hasattr(p0, "process_human_intervention"):
+                                    success = p0.process_human_intervention(cmd)
+                                    if success:
+                                        print(f"✅ Intervention processed: '{cmd}'")
+                                        if hasattr(p0, "get_intervention_stats"):
+                                            stats = p0.get_intervention_stats()
+                                            print(f"📊 Agent stats after intervention: {stats}")
+                                    else:
+                                        print(f"❌ Intervention failed: '{cmd}'")
                                 else:
-                                    print(f"❌ Intervention failed: '{cmd}'")
+                                    print("ℹ️ Interventions are not supported for ProAgent.")
                             except Exception as e:
                                 print(f"❌ Intervention error: {e}")
                                 import traceback
@@ -299,38 +386,9 @@ def main():
                     elif event.key == pygame.K_ESCAPE:
                         pygame.quit()
                         return
-                    elif event.key == pygame.K_m:
-                        # Debug: print memory state (only if memory is enabled)
-                        try:
-                            print("\n🧠 Agent Memory State:")
-                            if enable_memory and hasattr(p0, 'memory'):
-                                memory = p0.memory
-                                print(f"   Semantic entries: {len(memory.semantic)}")
-                                print(f"   Episodic entries: {len(memory.episodic)}")
-                                view = memory.prompt_view()
-                                print(f"   Memory view keys: {list(view.keys())}")
-                                print(f"   Last 3 episodic entries:")
-                                for i, entry in enumerate(memory.episodic[-3:]):
-                                    print(f"     {i}: {entry}")
-                                print(f"   Teammate model: {memory.semantic.get('teammate_model', {})}")
-                                print(f"   Intervention patterns: {len(memory.semantic.get('intervention_patterns', []))}")
-                            elif not enable_memory:
-                                print("   Memory module is DISABLED (use --no_memory flag)")
-                            else:
-                                print("   No memory object found")
-                            print("")
-                        except Exception as e:
-                            print(f"❌ Memory debug error: {e}")
-                            import traceback
-                            traceback.print_exc()
-
         if not paused and not intervention_mode:
             # Query agents
             res0 = p0.action(state)
-            try:
-                print(f"[DBG-DEMO] res0_type={type(res0)} res0_repr={repr(res0)}")
-            except Exception:
-                pass
             if isinstance(res0, tuple):
                 first = res0[0]
                 if isinstance(first, (Direction, Action)) or (isinstance(first, tuple) and len(first) == 2):
@@ -352,14 +410,6 @@ def main():
                 joint = (a0_conv, a1_conv)
                 
                 # Enhanced logging with new interpreter output
-                # Show intervention_reason only if it's non-empty (i.e., when human actually intervened)
-                last_intervention_reason = getattr(p0, 'last_intervention_reason', None)
-                if last_intervention_reason and last_intervention_reason.strip():
-                    print(f"[STEP {step}] 🎯 Intervention Reason: {last_intervention_reason}")
-                if enable_cot:
-                    last_chain_of_thought = getattr(p0, 'last_chain_of_thought', None)
-                    if last_chain_of_thought:
-                        print(f"[STEP {step}] 🧠 Chain of Thought: {last_chain_of_thought}")
                 if last_plan:
                     print(f"[STEP {step}] Interpreter Plan Steps: {last_plan.get('steps', [])}")
                 print(f"[STEP {step}] P0_action_raw={a0}, P0_action_conv={a0_conv}, P0_ml_action={ml}")
@@ -378,6 +428,11 @@ def main():
             # Brief pause to ensure step is visible
             time.sleep(1)
 
+            if done:
+                env.reset()
+                state = env.state
+                step = 0
+
         # Render
         screen.fill((255, 255, 255))
         img = viz.render_state(state, mdp.terrain_mtx)
@@ -386,9 +441,9 @@ def main():
         # UI - Enhanced with interpreter information
         info_lines = [
             f'Step: {step}',
-            'Controls: SPACE=pause, P=intervene, M=memory debug, ESC=quit',
+            'Controls: SPACE=pause, P=intervene, ESC=quit',
             f'Total Interventions: {len(p0.get_intervention_history())}',
-            f'Config: CoT={"ON" if enable_cot else "OFF"}, Memory={"ON" if enable_memory else "OFF"}',
+            f'Config: Memory={"ON" if enable_memory else "OFF"}',
         ]
 
         # Teammate model/type
@@ -398,21 +453,12 @@ def main():
         # Add interpreter status information
         try:
             last_plan = getattr(p0, 'last_plan', None)  
-            last_intervention_reason = getattr(p0, 'last_intervention_reason', None)
-            last_chain_of_thought = getattr(p0, 'last_chain_of_thought', None)
             
             if last_plan and last_plan.get('steps'):
                 steps_str = ', '.join(last_plan.get('steps', [])[:3])  # Show first 3 steps
                 if len(last_plan.get('steps', [])) > 3:
                     steps_str += '...'
                 info_lines.append(f'Plan Steps: {steps_str}')
-            # Show intervention_reason only if it's non-empty (i.e., when human actually intervened)
-            if last_intervention_reason and last_intervention_reason.strip():
-                # Show intervention reason with special formatting
-                info_lines.append(('INTERVENTION_REASON', last_intervention_reason))
-            if enable_cot and last_chain_of_thought:
-                # Show chain of thought with special formatting (only if CoT is enabled)
-                info_lines.append(('CHAIN_OF_THOUGHT', last_chain_of_thought))
             
             # Show current ML action
             current_ml = getattr(p0, 'current_ml_action', None)
@@ -445,7 +491,7 @@ def main():
         if intervention_mode:
             info_lines.append(f'Intervention: {intervention_text}_')
         else:
-            # Recent intervention history is now shown in the memory debug section above
+            # Recent intervention history is shown above
             pass
             
         # Render UI in a wider right-side panel with word wrapping
@@ -463,9 +509,6 @@ def main():
                     continue
                 if tag == 'INTERVENTION_REASON':
                     wrapped_lines.extend(wrap_two_lines('Intervention Reason: ', content, font, text_panel_width))
-                    continue
-                if tag == 'CHAIN_OF_THOUGHT':
-                    wrapped_lines.extend(wrap_multiline_text('Chain of Thought: ', content, font, text_panel_width, max_lines=15))
                     continue
                 if tag == 'INTERVENTION':   
                     wrapped_lines.extend(wrap_two_lines('Intervention: ', content, font, text_panel_width))

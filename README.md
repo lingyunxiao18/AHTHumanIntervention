@@ -39,20 +39,12 @@ The `requirements.txt` file includes only the packages needed to run the demo (n
 
 ## Step 2: Set Up OpenAI API Key
 
-The demo requires an OpenAI API key to use GPT models. You have two options:
+The demo requires an OpenAI API key to use GPT models.
 
-### Option A: Environment Variable (Recommended)
+### Environment Variable
 ```bash
 export OPENAI_API_KEY="your-api-key-here"
 ```
-
-### Option B: Create Key File
-Create a file named `openai_key.txt` in the project root directory:
-```bash
-echo "your-api-key-here" > openai_key.txt
-```
-
-**Important:** Make sure the file contains only the API key with no blank lines or extra whitespace.
 
 ## Step 3: Run the Demo
 
@@ -112,7 +104,7 @@ Set the maximum number of steps in the episode:
 python hint_agent_overcooked_demo.py --horizon <number>
 ```
 
-Default: `400` steps
+Default: `200` steps
 
 #### Random Start Positions
 
@@ -124,7 +116,7 @@ python hint_agent_overcooked_demo.py --random_start
 
 By default, players start at fixed positions defined by the layout.
 
-#### Ablation Study Options
+#### Ablation Study Options / Ego Variant
 
 Control the Chain-of-Thought (CoT) reasoning and memory modules for ablation studies:
 
@@ -138,9 +130,34 @@ python hint_agent_overcooked_demo.py --no_cot
 python hint_agent_overcooked_demo.py --no_memory
 ```
 
-**Disable both (Baseline mode):**
+**Explicit ego variant label (paper terminology):**
 ```bash
-python hint_agent_overcooked_demo.py --no_cot --no_memory
+python hint_agent_overcooked_demo.py --ego_variant ProAgent
+python hint_agent_overcooked_demo.py --ego_variant YAY
+python hint_agent_overcooked_demo.py --ego_variant CoT
+python hint_agent_overcooked_demo.py --ego_variant HINT
+```
+
+Notes:
+- `ProAgent` uses the implementation in `hintagent/proagent`
+- `YAY` = memory only (`--no_cot`)
+- `CoT` = reasoning only (`--no_memory`)
+- `HINT` = CoT + memory (default)
+- Overcooked and CrowdNav environment code includes upstream TODO/HACK comments.
+
+#### Window Title Metadata
+
+You can include run metadata in the window title:
+```bash
+python hint_agent_overcooked_demo.py --participant_id PXXX --title_layout counter_circuit --title_teammate onion_specialist
+```
+
+#### Logging Stdout/Stderr to a File
+
+```bash
+python hint_agent_overcooked_demo.py --log
+python hint_agent_overcooked_demo.py --log_path /absolute/path/to/run.log
+python hint_agent_overcooked_demo.py --log_dir run_logs
 ```
 
 ### Example Commands
@@ -152,7 +169,7 @@ python hint_agent_overcooked_demo.py
 
 **Custom layout and teammate:**
 ```bash
-python hint_agent_overcooked_demo.py --layout cramped_room --teammate dish_specialist
+python hint_agent_overcooked_demo.py --layout cramped_room --teammate onion_specialist
 ```
 
 **Full customization:**
@@ -191,6 +208,7 @@ Press **P** to enter intervention mode, then type a command and press **Enter**.
 - `"Focus on cooking onions first"`
 - `"Help your teammate by delivering soup"`
 - `"You seem to be stuck for a while"`
+- `"Your teammate is idle now"`
 
 ---
 
@@ -226,7 +244,7 @@ Set the maximum number of steps in the episode:
 python crowdnav_demo.py --horizon <number>
 ```
 
-Default: `200` steps
+Default: `20` steps
 
 #### Random Seed
 
@@ -284,6 +302,23 @@ python crowdnav_demo.py --robot_v_pref <float>
 ```
 Default: `1.0` m/s
 
+### Additional Flags
+
+**Title metadata (shown in the figure title):**
+```bash
+python crowdnav_demo.py --participant_id PXXX --title_layout cooperative_reaching --title_teammate orca --ego_variant HINT
+```
+
+Notes:
+- For CrowdNav, `ProAgent` is treated the same as `HINT` (label only)
+
+**Logging stdout/stderr to a file:**
+```bash
+python crowdnav_demo.py --log
+python crowdnav_demo.py --log_path /absolute/path/to/run.log
+python crowdnav_demo.py --log_dir run_logs
+```
+
 ### Example Commands
 
 **Basic run with defaults:**
@@ -293,7 +328,7 @@ python crowdnav_demo.py
 
 **Custom horizon and seed:**
 ```bash
-python crowdnav_demo.py --horizon 300 --seed 42
+python crowdnav_demo.py --horizon 50 --seed 42
 ```
 
 **Customized environment:**
@@ -303,7 +338,7 @@ python crowdnav_demo.py --human_num 6 --circle_radius 8.0 --human_v_pref 1.5
 
 **Full customization:**
 ```bash
-python crowdnav_demo.py --horizon 500 --seed 10 --human_num 5 --human_num_range 1 --circle_radius 7.0 --robot_v_pref 1.2
+python crowdnav_demo.py --horizon 50 --seed 10 --human_num 5 --human_num_range 1 --circle_radius 7.0 --robot_v_pref 1.2
 ```
 
 ## CrowdNav Demo Controls
@@ -316,7 +351,7 @@ Once the simulation window opens, you can use the following controls:
 ### Providing Interventions
 
 1. Press **P** to pause the simulation
-2. Type your intervention command (e.g., `"Avoid the crowded area to the left"`)
+2. Type your intervention command (e.g., `"Your teammate is almost there!"`)
 3. Press **Enter** to apply the intervention and resume the simulation
 4. Press **ESC** while typing to cancel the intervention
 
@@ -324,18 +359,4 @@ Example interventions:
 
 - `"Avoid the crowded area to the left"`
 - `"Take a more direct path to the goal"`
-- `"Slow down and wait for the humans to pass"`
-- `"You're getting too close to the humans"`
-
-The demo displays real-time information including:
-- Current step number
-- Chain-of-thought reasoning
-- Intervention reasons
-- Action plans
-- Current action being taken
-
-The visualization shows:
-- Robot position and trajectory (in red)
-- Human agent positions and trajectories (in blue)
-- Goal location
-- Obstacles and environment boundaries
+- `"Your teammate is at another meeting location"`

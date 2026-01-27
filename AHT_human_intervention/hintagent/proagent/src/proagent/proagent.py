@@ -20,8 +20,6 @@ except Exception:
     def query_counter_states(*args, **kwargs):
         return {}
 
-cwd = os.getcwd()
-openai_key_file = os.path.join(cwd, "openai_key.txt")
 # Prompts are stored under proagent/src/prompts
 PROAGENT_SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 PROMPT_DIR = os.path.join(PROAGENT_SRC_DIR, "prompts")
@@ -38,9 +36,9 @@ NAME_TO_ACTION = {
 
 class ProAgent(object):
 	"""
-	This agent uses GPT-4.1-nano to generate actions.
+	This agent uses GPT 5-mini to generate actions.
 	"""
-	def __init__(self, model="gpt-4.1-nano"):
+	def __init__(self, model="gpt-5-mini"):
 		self.agent_index = None
 		self.model = model
 
@@ -54,22 +52,7 @@ class ProAgent(object):
 		if api_key_env:
 			self.openai_api_keys = [api_key_env.strip()]
 			return
-		# 2) Try CWD openai_key.txt (repo root during demos)
-		if os.path.exists(openai_key_file):
-			with open(openai_key_file, "r") as f:
-				context = f.read()
-			self.openai_api_keys = [k for k in context.split('\n') if k.strip()]
-			if self.openai_api_keys:
-				return
-		# 3) Fallback to proagent/src/openai_key.txt
-		alt_key_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "openai_key.txt"))
-		if os.path.exists(alt_key_file):
-			with open(alt_key_file, "r") as f:
-				context = f.read()
-			self.openai_api_keys = [k for k in context.split('\n') if k.strip()]
-			if self.openai_api_keys:
-				return
-		raise FileNotFoundError("OPENAI_API_KEY not set and openai_key.txt not found in CWD or proagent/src/")
+		raise FileNotFoundError("OPENAI_API_KEY not set in environment")
 
 	def openai_api_key(self):
 		if self.key_rotation:
@@ -91,13 +74,13 @@ class ProAgent(object):
 
 class ProMediumLevelAgent(ProAgent):
 	"""
-		This agent default to use GPT-4.1-nano to generate medium level actions.
+		This agent default to use GPT 5-mini to generate medium level actions.
 	"""
 	def __init__(
 			self,
 			mlam,
 			layout,
-			model='gpt-4.1-nano',
+			model='gpt-5-mini',
 			prompt_level='l2-ap', # ['l1-p', 'l2-ap', 'l3-aip']
 			belief_revision=False,
 			retrival_method="recent_k",
@@ -196,7 +179,6 @@ class ProMediumLevelAgent(ProAgent):
 		self.planner = self.create_gptmodule("planner", retrival_method=self.retrival_method, K=self.K)
 		self.explainer = self.create_gptmodule("explainer", retrival_method='recent_k', K=self.K)
 
-		print(self.planner.instruction_head_list[0]['content'])
 
 	def generate_layout_prompt(self):
 		layout_prompt_dict = {
@@ -350,7 +332,6 @@ class ProMediumLevelAgent(ProAgent):
 			if self.override_ml_action is not None:
 				self.current_ml_action = self.override_ml_action
 				self.override_ml_action = None
-				print(f"[HUMAN_OVERRIDE] Forcing ml_action -> {self.current_ml_action}")
 			else:
 				self.current_ml_action = self.generate_ml_action(state)
 
@@ -401,22 +382,11 @@ class ProMediumLevelAgent(ProAgent):
 				return chosen_action
 		else:
 			possible_motion_goals = self.find_motion_goals(state)    
-			# Debug: log dispenser locations and goal count when picking up onion
-			try:
-				if self.current_ml_action in ["pickup(onion)", "pickup_onion"]:
-					print(f"[DEBUG] Onion dispensers: {self.mdp.get_onion_dispenser_locations()}")
-				print(f"[DEBUG] possible_motion_goals({self.current_ml_action}): {len(possible_motion_goals)}")
-			except Exception:
-				pass
 			current_motion_goal, chosen_action = self.choose_motion_goal(
 				start_pos_and_or, 
 				possible_motion_goals, 
 				state
 			)
-			try:
-				print(f"[DEBUG] chosen_action={chosen_action}, current_motion_goal={current_motion_goal}")
-			except Exception:
-				pass
 		# if "wait" in self.current_ml_action: 
 		# 	print(f'current motion goal for P{self.agent_index} is wait') 
 		# else: 
@@ -470,7 +440,7 @@ class ProMediumLevelAgent(ProAgent):
 
 		# print(f'ml_action = {self.current_ml_action}') 
 		# print(f'P{self.agent_index} : {Action.to_char(chosen_action)}')
-		print(f"[DBG] return chosen_action={chosen_action} type={type(chosen_action)}")
+		# DBG prints removed
 		if pkg_resources.get_distribution("overcooked_ai").version == '1.1.0':
 			return chosen_action, {}
 		elif pkg_resources.get_distribution("overcooked_ai").version == '0.0.1':
@@ -763,15 +733,10 @@ class ProMediumLevelAgent(ProAgent):
 		counter_objects = self.mdp.get_counter_objects_dict(
 			state, list(self.mdp.terrain_pos_dict["X"])
 		)
-		try:
-			print(f"[DBG] Player{self.agent_index} pos_and_or={player.pos_and_or}")
-			print(f"[DBG] Onion dispensers={self.mdp.get_onion_dispenser_locations()}, Dish dispensers={self.mdp.get_dish_dispenser_locations()}, Pots={self.mdp.get_pot_locations()}")
-		except Exception:
-			pass
+		# DBG prints removed
 		if self.current_ml_action in ["pickup(onion)", "pickup_onion"]:
 			# Use shared env's helper name
 			raw_goals = am.pickup_onion_actions(state, counter_objects)
-			print(f"[DBG] raw_goals(pickup_onion)={raw_goals}")
 			motion_goals = raw_goals
 
 
@@ -816,7 +781,7 @@ class ProMediumLevelAgent(ProAgent):
 				player.pos_and_or, mg
 			)
 		]
-		print(f"[DBG] filtered_goals({self.current_ml_action}) {len(motion_goals)}/{raw_len}: {motion_goals}")
+		# DBG prints removed
 
 		return motion_goals
 
@@ -872,10 +837,7 @@ class ProMediumLevelAgent(ProAgent):
 			action_plan, plan_cost = self.real_time_planner(
 				start_pos_and_or, goal, state
 			)     
-			try:
-				print(f"[DBG] plan goal={goal} cost={plan_cost} first_action={action_plan}")
-			except Exception:
-				pass
+			# DBG prints removed
 			if plan_cost < min_cost:
 				best_action = action_plan
 				min_cost = plan_cost
@@ -901,5 +863,5 @@ class ProMediumLevelAgent(ProAgent):
 			return None, np.Inf
 	
 class ProPlanningAgent(ProAgent):
-	def __init__(self, model="gpt-4.1-nano"):
+	def __init__(self, model="gpt-5-mini"):
 		super().__init__(model=model)
