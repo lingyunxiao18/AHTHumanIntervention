@@ -57,141 +57,19 @@ python hint_agent_overcooked_demo.py
 
 ### Command-Line Arguments
 
-You can customize the demo with the following arguments:
+Common flags:
+- `--layout` (default `counter_circuit`) or `--layout_name` (direct layout name)
+- `--teammate` (default `onion_specialist`)
+- `--horizon` (default `200`)
+- random start is on by default; use `--fixed_start` to disable
+- `--no_cot`, `--no_memory`, `--ego_variant`
+- `--participant_id`, `--title_layout`, `--title_teammate`
+- `--log`, `--log_path`, `--log_dir`
 
-#### Layout Selection
-
-**Option 1: Use predefined layout keys**
-```bash
-python hint_agent_overcooked_demo.py --layout <layout_key>
-```
-
-Available layout keys:
-- `counter_circuit` (default) - Maps to "random3"
-- `forced_coordination` - Maps to "random0"
-- `cramped_room` - Maps to "simple"
-- `coordination_ring` - Maps to "random1"
-- `asymmetric_advantages` - Maps to "unident_s"
-
-**Option 2: Use direct Overcooked layout name**
-```bash
-python hint_agent_overcooked_demo.py --layout_name <direct_layout_name>
-```
-
-This overrides the `--layout` argument. Examples: `random3`, `random0`, `simple`, `random1`, `unident_s`. You may find all these layouts under ```shared/envs/envs/overcooked/overcooked_ai_py/layouts```
-
-#### Teammate Selection
-
-Choose your AI teammate using the `--teammate` argument:
-
-```bash
-python hint_agent_overcooked_demo.py --teammate <teammate_type>
-```
-
-Available teammates:
-- `onion_specialist` (default) - Specializes in collecting and preparing onions
-- `dish_specialist` - Specializes in handling dishes
-- `greedy` - Uses a greedy heuristic strategy
-- `random` - Takes random actions
-- `stay` - Stays in place (useful for testing)
-- `hand_coded` - Uses a simple hand-coded strategy
-
-#### Horizon (Episode Length)
-
-Set the maximum number of steps in the episode:
-
-```bash
-python hint_agent_overcooked_demo.py --horizon <number>
-```
-
-Default: `200` steps
-
-#### Random Start Positions
-
-Enable random starting positions for players:
-
-```bash
-python hint_agent_overcooked_demo.py --random_start
-```
-
-By default, players start at fixed positions defined by the layout.
-
-#### Ablation Study Options / Ego Variant
-
-Control the Chain-of-Thought (CoT) reasoning and memory modules for ablation studies:
-
-**Disable Chain-of-Thought reasoning:**
-```bash
-python hint_agent_overcooked_demo.py --no_cot
-```
-
-**Disable Memory module:**
-```bash
-python hint_agent_overcooked_demo.py --no_memory
-```
-
-**Explicit ego variant label (paper terminology):**
-```bash
-python hint_agent_overcooked_demo.py --ego_variant ProAgent
-python hint_agent_overcooked_demo.py --ego_variant YAY
-python hint_agent_overcooked_demo.py --ego_variant CoT
-python hint_agent_overcooked_demo.py --ego_variant HINT
-```
-
-Notes:
-- `ProAgent` uses the implementation in `hintagent/proagent`
-- `YAY` = memory only (`--no_cot`)
-- `CoT` = reasoning only (`--no_memory`)
-- `HINT` = CoT + memory (default)
-- Overcooked and CrowdNav environment code includes upstream TODO/HACK comments.
-
-#### Window Title Metadata
-
-You can include run metadata in the window title:
-```bash
-python hint_agent_overcooked_demo.py --participant_id PXXX --title_layout counter_circuit --title_teammate onion_specialist
-```
-
-#### Logging Stdout/Stderr to a File
-
-```bash
-python hint_agent_overcooked_demo.py --log
-python hint_agent_overcooked_demo.py --log_path /absolute/path/to/run.log
-python hint_agent_overcooked_demo.py --log_dir run_logs
-```
-
-### Example Commands
-
-**Basic run with defaults:**
-```bash
-python hint_agent_overcooked_demo.py
-```
-
-**Custom layout and teammate:**
+Examples:
 ```bash
 python hint_agent_overcooked_demo.py --layout cramped_room --teammate onion_specialist
-```
-
-**Full customization:**
-```bash
-python hint_agent_overcooked_demo.py --layout coordination_ring --teammate greedy --horizon 500 --random_start
-```
-
-**Using direct layout name:**
-```bash
-python hint_agent_overcooked_demo.py --layout_name random3 --teammate onion_specialist --horizon 300
-```
-
-**Ablation study examples:**
-```bash
-# Baseline mode (no CoT, no memory)
 python hint_agent_overcooked_demo.py --no_cot --no_memory --layout counter_circuit
-
-# CoT only (reasoning without memory)
-python hint_agent_overcooked_demo.py --no_memory --layout counter_circuit
-
-# Memory only (no explicit reasoning display)
-python hint_agent_overcooked_demo.py --no_cot --layout counter_circuit
 ```
 
 ## Step 4: Game Controls
@@ -234,111 +112,23 @@ python crowdnav_demo.py
 
 ### Command-Line Arguments
 
-You can customize the demo with the following arguments:
+Common flags:
+- `--horizon` (default `20`)
+- `--seed` (default `6`)
+- `--human_num` (default `4`)
+- `--circle_radius` (default `6.0`)
+- `--human_v_pref` (default `1.0`)
+- `--robot_v_pref` (default `1.0`)
+- random start is on by default; use `--fixed_start` to disable
+- `--no_cot`, `--no_memory`
+- `--teammate_style` (`aggressive|conservative|switching`, default `conservative`)
+- `--switch_prob` (only used when style is `switching`, default `0.5`)
+- `--participant_id`, `--title_layout`, `--title_teammate`, `--ego_variant`
+- `--log`, `--log_path`, `--log_dir`
 
-#### Horizon (Episode Length)
-
-Set the maximum number of steps in the episode:
-
+Example:
 ```bash
-python crowdnav_demo.py --horizon <number>
-```
-
-Default: `20` steps
-
-#### Random Seed
-
-Set the random seed for environment initialization:
-
-```bash
-python crowdnav_demo.py --seed <number>
-```
-
-Default: `6`
-
-#### Background Agent Configuration
-
-Control the simulation environment parameters:
-
-**Number of humans (total, includes teammate + background agents):**
-```bash
-python crowdnav_demo.py --human_num <number>
-```
-Default: `4`
-
-**Human number variation range:**
-```bash
-python crowdnav_demo.py --human_num_range <number>
-```
-Actual number will be (human_num - range) to (human_num + range). Default: `2`
-
-**Circle radius (meters) - starting area:**
-```bash
-python crowdnav_demo.py --circle_radius <float>
-```
-Default: `6.0` meters
-
-**Human agent radius (meters):**
-```bash
-python crowdnav_demo.py --human_radius <float>
-```
-Default: `0.3` meters
-
-**Human maximum velocity (m/s):**
-```bash
-python crowdnav_demo.py --human_v_pref <float>
-```
-Default: `1.0` m/s
-
-**Robot radius (meters):**
-```bash
-python crowdnav_demo.py --robot_radius <float>
-```
-Default: `0.3` meters
-
-**Robot maximum velocity (m/s):**
-```bash
-python crowdnav_demo.py --robot_v_pref <float>
-```
-Default: `1.0` m/s
-
-### Additional Flags
-
-**Title metadata (shown in the figure title):**
-```bash
-python crowdnav_demo.py --participant_id PXXX --title_layout cooperative_reaching --title_teammate orca --ego_variant HINT
-```
-
-Notes:
-- For CrowdNav, `ProAgent` is treated the same as `HINT` (label only)
-
-**Logging stdout/stderr to a file:**
-```bash
-python crowdnav_demo.py --log
-python crowdnav_demo.py --log_path /absolute/path/to/run.log
-python crowdnav_demo.py --log_dir run_logs
-```
-
-### Example Commands
-
-**Basic run with defaults:**
-```bash
-python crowdnav_demo.py
-```
-
-**Custom horizon and seed:**
-```bash
-python crowdnav_demo.py --horizon 50 --seed 42
-```
-
-**Customized environment:**
-```bash
-python crowdnav_demo.py --human_num 6 --circle_radius 8.0 --human_v_pref 1.5
-```
-
-**Full customization:**
-```bash
-python crowdnav_demo.py --horizon 50 --seed 10 --human_num 5 --human_num_range 1 --circle_radius 7.0 --robot_v_pref 1.2
+python crowdnav_demo.py --horizon 50 --seed 42 --human_num 6 --teammate_style switching --switch_prob 0.7
 ```
 
 ## CrowdNav Demo Controls

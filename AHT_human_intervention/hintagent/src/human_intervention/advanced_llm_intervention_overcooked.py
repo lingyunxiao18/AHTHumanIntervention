@@ -45,7 +45,7 @@ Category = Literal["policy", "env", "teammate", "general_hint"]
 # ---------------------------------------------------------------------
 
 def _describe_situation_for_memory(state, events=None, psi_text: Optional[str] = None) -> str:
-	"""Short natural-language description of the local situation for ICL."""
+	"""Short natural-language description of the local state abstraction for ICL."""
 	if psi_text:
 		base = psi_text.strip()
 	else:
@@ -67,9 +67,9 @@ def _describe_situation_for_memory(state, events=None, psi_text: Optional[str] =
 				parts.append(f"ego at {ego_pos} holding {ego_hold}")
 			if mate_pos is not None:
 				parts.append(f"teammate at {mate_pos} holding {mate_hold}")
-			base = "; ".join(parts) if parts else "situation unknown"
+			base = "; ".join(parts) if parts else "state abstraction unknown"
 		except Exception:
-			base = "situation unknown"
+			base = "state abstraction unknown"
 	if events:
 		return base + " | events: " + ", ".join(events)
 	return base
@@ -376,7 +376,6 @@ def _get_system_rules(enable_cot: bool = True, enable_memory: bool = True) -> st
 	# Remove CoT section if disabled
 	if not enable_cot:
 		# Remove the entire THINK (CHAIN OF THOUGHT) section
-		import re
 		# Match from "THINK (CHAIN OF THOUGHT" to and including "OUTPUT:", replace with just "OUTPUT:"
 		cot_pattern = r'THINK \(CHAIN OF THOUGHT.*?\nOUTPUT:'
 		result = re.sub(cot_pattern, 'OUTPUT:', result, flags=re.DOTALL)
@@ -543,7 +542,7 @@ class AdvancedLLMInterpreter:
 			examples.append({
 				"timestamp": p.get("timestamp"),
 				"detected_failures": p.get("detected_failures", []),
-				"situation": p.get("psi_text", ""),
+				"state_abstraction": p.get("psi_text", ""),
 				"outcome": p.get("outcome", "unknown"),
 				# minimal raw info in case model wants concrete action
 				"action_taken": p.get("action_taken"),
@@ -564,6 +563,8 @@ class AdvancedLLMInterpreter:
 				"detected_failures": events or [],
 				"action_taken": plan.steps[0] if plan.steps else None,
 				"low_level_override": plan.low_level_override,
+				"category": getattr(plan, "category", None),
+				"teammate_behavior": getattr(plan, "teammate_behavior", ""),
 				"psi_text": psi_snapshot,
 				"embedding": self._embed_text(psi_snapshot) if psi_snapshot else None,
 				"outcome": "pending",
@@ -651,9 +652,9 @@ class AdvancedLLMInterpreter:
 			if icl_examples:
 				print(f"[ICL] Using {len(icl_examples)} examples:")
 				for i, ex in enumerate(icl_examples):
-					situation = ex.get("situation", "")[:50]
+					state_abstraction = ex.get("state_abstraction", "")
 					events_str = ", ".join(ex.get("detected_failures", []))
-					print(f"  [{i+1}] t={ex.get('timestamp')} events=[{events_str}] situation={situation}...")
+					print(f"  [{i+1}] t={ex.get('timestamp')} events=[{events_str}] state_abstraction={state_abstraction}")
 
 		# Get system rules based on enabled features
 		system_rules = _get_system_rules(enable_cot=self.enable_cot, enable_memory=self.enable_memory)

@@ -113,11 +113,14 @@ def main():
     parser.add_argument('--layout', type=str, default='counter_circuit', help='Layout key (mapped via NEW_LAYOUTS)')
     parser.add_argument('--layout_name', type=str, default=None, help='Direct Overcooked layout name (overrides --layout)')
     parser.add_argument('--horizon', type=int, default=200)
-    parser.add_argument('--random_start', action='store_true', help='Randomize player starting positions')
+    parser.add_argument('--random_start', action='store_true', default=True,
+                        help='Randomize player starting positions (default: True)')
+    parser.add_argument('--fixed_start', action='store_true',
+                        help='Use fixed player starting positions')
     parser.add_argument(
         '--teammate',
         type=str,
-        default='onion_specialist',
+        default='hand_coded',
         help='Teammate agent type: onion_specialist, dish_specialist, greedy, random, stay, hand_coded'
     )
     parser.add_argument(
@@ -168,7 +171,8 @@ def main():
         layout_name = NEW_LAYOUTS.get(layout, layout)
 
     mdp = OvercookedGridworld.from_layout_name(layout_name)
-    start_fn = mdp.get_random_start_state_fn(random_start_pos=True) if args.random_start else None
+    random_start = args.random_start and not args.fixed_start
+    start_fn = mdp.get_random_start_state_fn(random_start_pos=True) if random_start else None
     env = OvercookedEnv(mdp, start_state_fn=start_fn, horizon=args.horizon)
     env.reset()
 

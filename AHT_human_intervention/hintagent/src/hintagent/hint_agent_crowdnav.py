@@ -62,8 +62,9 @@ class HINTAgentCrowdNav:
     - Waypoint-based action selection (0-7)
     """
     
-    def __init__(self, model='gpt-5-mini', agent_index=0, 
-                 history_horizon=2, **kwargs):
+    def __init__(self, model='gpt-5-mini', agent_index=0,
+                 history_horizon=2, enable_cot: bool = True,
+                 enable_memory: bool = True, **kwargs):
         """
         Initialize HINTAgent with AdvancedLLMInterpreter planner for CrowdNav-AHT.
         """
@@ -87,6 +88,8 @@ class HINTAgentCrowdNav:
         self.low_level_override_duration = 0
         
         # Initialize interpreter-based planner
+        self.enable_cot = enable_cot
+        self.enable_memory = enable_memory
         self.memory = AgentMemory()
         self.history_horizon = history_horizon
         
@@ -95,9 +98,11 @@ class HINTAgentCrowdNav:
         self.llm_client = LLMClient(openai_client=OpenAI(api_key=self.openai_api_key()), model=model)
         
         self.interpreter = AdvancedLLMInterpreter(
-            self.llm_client, 
-            self.memory, 
-            history_horizon=history_horizon
+            self.llm_client,
+            self.memory,
+            history_horizon=history_horizon,
+            enable_cot=enable_cot,
+            enable_memory=enable_memory,
         )
         
         # Human intervention tracking
@@ -127,7 +132,9 @@ class HINTAgentCrowdNav:
         self._goal_history = deque(maxlen=self.no_progress_window)
         self._pending_intervention = None
         
-        print(f"🤖 HINTAgentCrowdNav initialized with interpreter-based planner")
+        cot_status = "ENABLED" if enable_cot else "DISABLED"
+        mem_status = "ENABLED" if enable_memory else "DISABLED"
+        print(f"🤖 HINTAgentCrowdNav initialized (CoT: {cot_status}, Memory: {mem_status})")
     
     # ==================== OpenAI Key Management ====================
     

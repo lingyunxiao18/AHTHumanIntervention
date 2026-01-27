@@ -593,6 +593,7 @@ class CrowdSimAHT(CrowdSimDict):
         # Colors / styles
         robot_color = 'yellow'
         human_edge = 'k'
+        teammate_color = 'cyan'
         waypoint_color = 'blue'
         goal_color = 'red'
         meeting_colors = ['orange', 'purple']
@@ -657,10 +658,15 @@ class CrowdSimAHT(CrowdSimDict):
             for hi, _ in enumerate(self.humans):
                 if hi < len(f["humans"]):
                     h_px, h_py, h_r, h_theta = f["humans"][hi]
-                    arrow_color = 'black'
+                    is_teammate = (hi == 0)
+                    arrow_color = teammate_color if is_teammate else 'black'
 
                     # Circle outline
-                    h_disc = plt.Circle((h_px, h_py), h_r, fill=False, ec=human_edge, lw=1.5)
+                    if is_teammate:
+                        h_disc = plt.Circle((h_px, h_py), h_r, fill=True, fc=teammate_color,
+                                            ec=human_edge, lw=1.5, alpha=0.9)
+                    else:
+                        h_disc = plt.Circle((h_px, h_py), h_r, fill=False, ec=human_edge, lw=1.5)
                     ax.add_patch(h_disc)
 
                     # Heading arrow (length ≈ radius)
@@ -694,6 +700,16 @@ class CrowdSimAHT(CrowdSimDict):
                                markersize=12, label='Meeting 2'),
                     ])
                 legend_handles.extend([
+                    # Teammate: cyan filled circle
+                    Line2D([], [], linestyle='None', marker='o',
+                           markerfacecolor=teammate_color, markeredgecolor=human_edge,
+                           markersize=12, markeredgewidth=1, label='Teammate'),
+
+                    # Background humans: outline circle
+                    Line2D([], [], linestyle='None', marker='o',
+                           markerfacecolor='none', markeredgecolor=human_edge,
+                           markersize=12, markeredgewidth=1, label='Background'),
+
                     # Waypoint as a blue 'x'
                     Line2D([], [], linestyle='None', marker='x',
                            color=waypoint_color, markersize=10, label='Waypoint'),

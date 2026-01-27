@@ -341,28 +341,53 @@ PLAN_JSON_SCHEMA = {
 }
 
 
+def _get_system_rules(enable_cot: bool = True, enable_memory: bool = True) -> str:
+	"""Return system rules with optional CoT/memory sections removed."""
+	script_dir = os.path.dirname(os.path.abspath(__file__))
+	rules_file = os.path.join(script_dir, "advanced_llm_system_rules_crowdnav.txt")
+	try:
+		with open(rules_file, 'r', encoding='utf-8') as f:
+			base_rules = f.read()
+	except Exception as e:
+		print(f"[WARNING] Could not load system rules: {e}")
+		base_rules = "You are a navigation assistant for a robot in a crowd."
+
+	if enable_cot and enable_memory:
+		return base_rules
+
+	result = base_rules
+
+	if not enable_memory:
+		# Remove memory line from INPUT CONTEXT
+		result = re.sub(r'-\s*memory:.*\n', '', result, flags=re.IGNORECASE)
+		# Remove Memory Use step from CHAIN OF THOUGHT
+		result = re.sub(r'5\.\s*Memory Use:.*\n', '', result, flags=re.IGNORECASE)
+
+	if not enable_cot:
+		# Remove CHAIN OF THOUGHT block
+		result = re.sub(r'CHAIN OF THOUGHT.*?\n\n', '', result, flags=re.DOTALL | re.IGNORECASE)
+		# Set chain_of_thought field to empty in output description
+		result = re.sub(r'"chain_of_thought":\s*".*?"', '"chain_of_thought": ""', result)
+
+	return result
+
+
 class AdvancedLLMInterpreter:
 	"""
 	CoT + Memory interpreter for human interventions in CrowdNav-AHT.
 	Uses LLM to generate structured plans from text observations and human messages.
 	"""
 	
-	def __init__(self, llm_client: LLMClient, memory: AgentMemory, history_horizon: int = 6):
+	def __init__(self, llm_client: LLMClient, memory: AgentMemory, history_horizon: int = 6,
+	             enable_cot: bool = True, enable_memory: bool = True):
 		self.llm = llm_client
 		self.memory = memory
 		self.history_horizon = history_horizon
+		self.enable_cot = enable_cot
+		self.enable_memory = enable_memory
 		self._last_teammate_behavior = ""
 		self._pending_patterns: Dict[int, Dict[str, Any]] = {}
-		
-		# Load system rules
-		script_dir = os.path.dirname(os.path.abspath(__file__))
-		rules_file = os.path.join(script_dir, "advanced_llm_system_rules_crowdnav.txt")
-		try:
-			with open(rules_file, 'r', encoding='utf-8') as f:
-				self.system_rules = f.read()
-		except Exception as e:
-			print(f"[WARNING] Could not load system rules: {e}")
-			self.system_rules = "You are a navigation assistant for a robot in a crowd."
+		self.system_rules = _get_system_rules(enable_cot=enable_cot, enable_memory=enable_memory)
 
 	def _embed_text(self, text: str) -> Optional[List[float]]:
 		"""Embed text using a sentence encoder (OpenAI embeddings)."""
@@ -426,7 +451,7 @@ class AdvancedLLMInterpreter:
 			examples.append({
 				"timestamp": p.get("timestamp"),
 				"detected_failures": p.get("detected_failures", []),
-				"situation": p.get("psi_text", ""),
+				"state_abstraction": p.get("psi_text", ""),
 				"outcome": p.get("outcome", "unknown"),
 				"action_taken": p.get("action_taken"),
 				"low_level_override": p.get("low_level_override"),
@@ -445,6 +470,8 @@ class AdvancedLLMInterpreter:
 				"detected_failures": events or [],
 				"action_taken": plan.steps[0] if plan.steps else None,
 				"low_level_override": plan.low_level_override,
+				"category": getattr(plan, "category", None),
+				"teammate_behavior": getattr(plan, "teammate_behavior", ""),
 				"psi_text": psi_snapshot,
 				"embedding": self._embed_text(psi_snapshot) if psi_snapshot else None,
 				"outcome": "pending",
@@ -491,12 +518,18 @@ class AdvancedLLMInterpreter:
 		Returns:
 			Plan object with waypoint actions and reasoning
 		"""
-		memory_view = self.memory.prompt_view()
-		failure_events = {"lack_of_progress", "cyclic_behavior"}
-		use_retrieval = (not human_message or not human_message.strip()) and events and any(e in failure_events for e in events)
-		icl_examples = self._select_icl_examples(state_prompt, events=events, k=3, psi_text=psi_text) if use_retrieval else []
-		# Do not duplicate ICL examples inside memory_view
-		memory_view["intervention_patterns"] = []
+		if self.enable_memory:
+			memory_view = self.memory.prompt_view()
+			failure_events = {"lack_of_progress", "cyclic_behavior"}
+			use_retrieval = (not human_message or not human_message.strip()) and events and any(
+				e in failure_events for e in events
+			)
+			icl_examples = self._select_icl_examples(state_prompt, events=events, k=3, psi_text=psi_text) if use_retrieval else []
+			# Do not duplicate ICL examples inside memory_view
+			memory_view["intervention_patterns"] = []
+		else:
+			memory_view = {}
+			icl_examples = []
 		
 		# Build user prompt
 		user_prompt = {
@@ -515,7 +548,8 @@ class AdvancedLLMInterpreter:
 			raw_plan = self.llm.respond_json(PLAN_JSON_SCHEMA, self.system_rules, user_prompt)
 			try:
 				print(f"[LLM] Raw plan: {json.dumps(raw_plan, ensure_ascii=True)}")
-				print(f"[COT] {raw_plan.get('chain_of_thought', '')}")
+				if self.enable_cot:
+					print(f"[COT] {raw_plan.get('chain_of_thought', '')}")
 				low_level_override = raw_plan.get("low_level_override")
 				if low_level_override is not None:
 					print(f"[LLM] Low-level override: {low_level_override}")
@@ -530,18 +564,19 @@ class AdvancedLLMInterpreter:
 				low_level_override=None,
 			)
 		# Record in episodic memory
-		self.memory.write_events([{
-			"type": "plan",
-			"t": len(self.memory.episodic),
-			"steps": raw_plan.get("steps", []),
-			"category": raw_plan.get("category", ""),
-			"human_message": human_message,
-		}])
+		if self.enable_memory:
+			self.memory.write_events([{
+				"type": "plan",
+				"t": len(self.memory.episodic),
+				"steps": raw_plan.get("steps", []),
+				"category": raw_plan.get("category", ""),
+				"human_message": human_message,
+			}])
 		
 		# Convert to Plan dataclass
 		plan = Plan(
 			steps=raw_plan.get("steps", [0]),
-			chain_of_thought=raw_plan.get("chain_of_thought", ""),
+			chain_of_thought=raw_plan.get("chain_of_thought", "") if self.enable_cot else "",
 			category=raw_plan.get("category", "general_hint"),
 			teammate_behavior=raw_plan.get("teammate_behavior", ""),
 			low_level_override=raw_plan.get("low_level_override"),
@@ -550,7 +585,7 @@ class AdvancedLLMInterpreter:
 			self._last_teammate_behavior = plan.teammate_behavior
 		
 		# Store intervention pattern for retrieval (if human intervened)
-		if human_message and human_message.strip():
+		if self.enable_memory and human_message and human_message.strip():
 			self._store_intervention_pattern(plan, human_message, psi_text or state_prompt, events=events, t=int(timestep or 0), psi_text=psi_text)
 		
 		return plan

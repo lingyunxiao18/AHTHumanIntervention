@@ -224,24 +224,42 @@ def _sample_cluster(center, count, radius):
     return [(cx + dx, cy + dy) for dx, dy in offsets]
 
 
+def _sample_start_pair(env, radius, min_sep):
+    for _ in range(50):
+        angles = np.random.uniform(0.0, 2.0 * np.pi, size=2)
+        radii = np.random.uniform(0.0, radius, size=2)
+        r0 = (radii[0] * np.cos(angles[0]), radii[0] * np.sin(angles[0]))
+        r1 = (radii[1] * np.cos(angles[1]), radii[1] * np.sin(angles[1]))
+        if np.hypot(r0[0] - r1[0], r0[1] - r1[1]) >= min_sep:
+            return _clip_position(env, r0[0], r0[1]), _clip_position(env, r1[0], r1[1])
+    return _clip_position(env, radii[0] * np.cos(angles[0]), radii[0] * np.sin(angles[0])), _clip_position(
+        env, radii[1] * np.cos(angles[1]), radii[1] * np.sin(angles[1])
+    )
+
+
 def setup_cooperative_reaching(env, config, meeting_locations, total_humans=None,
                                dense_count=None, sparse_count=2, density_radius=1.5,
                                step_limit=20, robot_start=(-8.0, -8.0),
-                               teammate_start=(8.0, -8.0)):
+                               teammate_start=(8.0, -8.0), random_start=True, circle_radius=None):
     env.meeting_locations = meeting_locations
     env.meeting_radius = max(config.robot.radius, config.humans.radius)
     env.step_limit = step_limit
     env._teammate_goal_idx = 1  # default to less dense location
 
-    # Force starting positions to increase difficulty
-    robot_px, robot_py = _clip_position(env, robot_start[0], robot_start[1])
+    # Starting positions (random by default)
+    if random_start:
+        radius = circle_radius if circle_radius is not None else getattr(config.sim, "circle_radius", 6.0)
+        min_sep = 2.0 * max(config.robot.radius, config.humans.radius) + 0.5
+        (robot_px, robot_py), (teammate_px, teammate_py) = _sample_start_pair(env, radius, min_sep)
+    else:
+        robot_px, robot_py = _clip_position(env, robot_start[0], robot_start[1])
+        teammate_px, teammate_py = _clip_position(env, teammate_start[0], teammate_start[1])
     env.robot.set(
         robot_px, robot_py,
         meeting_locations[0][0], meeting_locations[0][1],
         0.0, 0.0, 0.0
     )
 
-    teammate_px, teammate_py = _clip_position(env, teammate_start[0], teammate_start[1])
     teammate = Human(config, 'humans')
     teammate.set(
         teammate_px, teammate_py,
@@ -282,7 +300,7 @@ def setup_cooperative_reaching(env, config, meeting_locations, total_humans=None
     env.robot.gx, env.robot.gy = meeting_locations[0]
 
 
-def update_teammate_goal(env, meeting_locations, density_radius=2.0, switch_margin=1):
+def update_teammate_goal(env, meeting_locations, style="conservative", density_radius=2.0, switch_margin=1, switch_prob=0.5):
     if not env.humans:
         return
     teammate = env.humans[0]
@@ -295,9 +313,16 @@ def update_teammate_goal(env, meeting_locations, density_radius=2.0, switch_marg
             if dist <= density_radius:
                 counts[idx] += 1
 
-    # Prefer the less crowded location
+    # Select goal based on teammate style
     current_idx = getattr(env, "_teammate_goal_idx", 0)
-    desired_idx = 0 if counts[0] + switch_margin < counts[1] else 1 if counts[1] + switch_margin < counts[0] else current_idx
+    if style == "aggressive":
+        dists = [np.hypot(teammate.px - mx, teammate.py - my) for (mx, my) in meeting_locations]
+        desired_idx = int(np.argmin(dists))
+    elif style == "switching":
+        desired_idx = 1 - current_idx if np.random.random() < switch_prob else current_idx
+    else:
+        # conservative: prefer the less crowded location
+        desired_idx = 0 if counts[0] + switch_margin < counts[1] else 1 if counts[1] + switch_margin < counts[0] else current_idx
     if desired_idx != current_idx:
         env._teammate_goal_idx = desired_idx
         teammate.gx, teammate.gy = meeting_locations[desired_idx]
@@ -339,6 +364,8 @@ def main():
                         help='Background agents near meeting location 1 (default: total-sparse)')
     parser.add_argument('--sparse_count', type=int, default=2,
                         help='Background agents near meeting location 2 (default: 2)')
+    parser.add_argument('--fixed_start', action='store_true',
+                        help='Use fixed starting positions (random by default)')
     parser.add_argument('--participant_id', type=str, default='P000')
     parser.add_argument('--ego_variant', type=str, default='HINT',
                         help='Ego variant label (ProAgent, YAY, CoT, HINT)')
@@ -346,6 +373,15 @@ def main():
                         help='Layout label for the figure title')
     parser.add_argument('--title_teammate', type=str, default='orca',
                         help='Teammate label for the figure title')
+    parser.add_argument('--teammate_style', type=str, default='conservative',
+                        choices=['aggressive', 'conservative', 'switching'],
+                        help='Teammate style for goal choice (default: conservative)')
+    parser.add_argument('--switch_prob', type=float, default=0.5,
+                        help='Switching teammate goal flip probability (default: 0.5)')
+    parser.add_argument('--no_cot', action='store_true',
+                        help='Disable Chain-of-Thought reasoning (ablation)')
+    parser.add_argument('--no_memory', action='store_true',
+                        help='Disable memory module (ablation)')
     parser.add_argument('--log', action='store_true', help='Mirror stdout/stderr to a log file')
     parser.add_argument('--log_path', type=str, default=None, help='Optional log file path')
     parser.add_argument('--log_dir', type=str, default='run_logs', help='Directory for auto log files')
@@ -400,7 +436,12 @@ def main():
     env.set_robot(robot)
 
     # Create HINT-Agent with intervention
-    p0 = HINTAgentCrowdNav(model='gpt-5-mini', agent_index=0)
+    p0 = HINTAgentCrowdNav(
+        model='gpt-5-mini',
+        agent_index=0,
+        enable_cot=not args.no_cot,
+        enable_memory=not args.no_memory,
+    )
     p0.set_agent_index(0)
 
     # Setup matplotlib figure with two subplots: visualization and text
@@ -549,7 +590,9 @@ def main():
     obs = env.reset()
     setup_cooperative_reaching(env, config, meeting_locations, total_humans=config.sim.human_num,
                                dense_count=args.dense_count, sparse_count=args.sparse_count,
-                               density_radius=1.5, step_limit=args.horizon)
+                               density_radius=1.5, step_limit=args.horizon,
+                               random_start=not args.fixed_start,
+                               circle_radius=config.sim.circle_radius)
     step = 0
 
     while step < args.horizon:
@@ -565,7 +608,8 @@ def main():
             continue  # Skip simulation step when paused
         
         if not paused:
-            update_teammate_goal(env, meeting_locations, density_radius=2.0, switch_margin=1)
+            update_teammate_goal(env, meeting_locations, style=args.teammate_style,
+                                 density_radius=2.0, switch_margin=1, switch_prob=args.switch_prob)
             update_background_flow(env, meeting_locations, swap_prob=0.1, drift_radius=1.5)
             # Query agent
             if reasoning_visible:
@@ -597,7 +641,9 @@ def main():
                 obs = env.reset()
                 setup_cooperative_reaching(env, config, meeting_locations, total_humans=config.sim.human_num,
                                            dense_count=args.dense_count, sparse_count=args.sparse_count,
-                                           density_radius=1.5, step_limit=args.horizon)
+                                           density_radius=1.5, step_limit=args.horizon,
+                                           random_start=not args.fixed_start,
+                                           circle_radius=config.sim.circle_radius)
                 step = 0
                 status_message = "Environment reset. Continuing..."
                 text_display.update_status(status_message, 'blue')
