@@ -13,12 +13,21 @@ def get_version() -> str:
 
 
 setup(
-    name="AHT_human_intervention",  # Replace with your own username
+    name="aht-human-intervention",
     version=get_version(),
-    description="zero-shot coordination benchmark",
+    description="HINT-Agent: human-in-the-loop multi-agent coordination demos",
     long_description=open("README.md", encoding="utf8").read(),
     long_description_content_type="text/markdown",
     packages=setuptools.find_packages(),
+    install_requires=[
+        "numpy",
+        "scipy",
+        "gym==0.22",
+        "pygame",
+        "tqdm",
+        "openai",
+        "jsonschema",
+    ],
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Science/Research",
@@ -28,6 +37,6 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    keywords="multi-agent reinforcement learning platform pytorch",
-    python_requires=">=3.6",
+    keywords="human-in-the-loop multi-agent coordination overcooked crowdnav llm",
+    python_requires=">=3.8",
 )

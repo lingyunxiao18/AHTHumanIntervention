@@ -10,7 +10,7 @@ import os
 import sys
 import re
 import numpy as np
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Optional, Dict, Any, List
 
 # Add project root to path for imports
@@ -33,10 +33,6 @@ if intervention_path not in sys.path:
         PROAGENT_ALLOWED_ML_ACTIONS,
     )
 
-# OpenAI key file is at workspace root (one level up from PROJECT_ROOT)
-WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
-openai_key_file = os.path.join(WORKSPACE_ROOT, "openai_key.txt")
-
 # Mapping for low-level override strings to action constants
 LOW_LEVEL_OVERRIDE_TO_ACTION = {
     "move_north": Direction.NORTH,
@@ -50,15 +46,16 @@ LOW_LEVEL_OVERRIDE_TO_ACTION = {
 
 # ==================== EVENT DETECTION ====================
 
-def detect_environment_events(state, prev_state, stuck_counter, agent_index=0):
+def detect_environment_events(state, prev_state, stuck_counter, agent_index=0, mdp=None, no_progress_window=10):
     """
     Detect environment events that can trigger intervention pattern reuse.
     
     Args:
         state: Current game state
         prev_state: Previous game state (None if first step)
-        stuck_counter: Current stuck counter (number of steps without position change)
+        stuck_counter: Current no-progress counter (number of steps without task progress)
         agent_index: Index of the ego agent
+        mdp: Overcooked MDP (for pot state queries)
         
     Returns:
         events: List of detected event strings
@@ -66,42 +63,69 @@ def detect_environment_events(state, prev_state, stuck_counter, agent_index=0):
     """
     events = []
     
-    if state is None or len(state.players) < 2:
+    if state is None or len(state.players) < 2 or mdp is None:
         return events, stuck_counter
-    
-    ego = state.players[agent_index]
-    teammate = state.players[1 - agent_index]
-    ego_pos = tuple(ego.position)
-    mate_pos = tuple(teammate.position)
-    
-    # --- Event 1: no progress / stuck ---
-    if prev_state is not None and len(prev_state.players) > agent_index:
-        prev_pos = tuple(prev_state.players[agent_index].position)
-        if ego_pos == prev_pos:
-            stuck_counter += 1
-        else:
+
+    def _task_signature(s):
+        sig = {
+            "ego_holding": "nothing",
+            "mate_holding": "nothing",
+            "pots_ready": 0,
+            "pots_cooking": 0,
+            "pots_partial": 0,
+            "soups_on_counter": 0,
+        }
+        try:
+            players = getattr(s, "players", [])
+            if len(players) > 0 and players[agent_index].held_object:
+                sig["ego_holding"] = players[agent_index].held_object.name
+            if len(players) > 1 and players[1 - agent_index].held_object:
+                sig["mate_holding"] = players[1 - agent_index].held_object.name
+        except Exception:
+            pass
+        try:
+            pot_states = mdp.get_pot_states(s)
+            sig["pots_ready"] = len(pot_states["onion"]["ready"]) + len(pot_states["tomato"]["ready"])
+            sig["pots_cooking"] = len(pot_states["onion"]["cooking"]) + len(pot_states["tomato"]["cooking"])
+            sig["pots_partial"] = len(pot_states["onion"]["partially_full"]) + len(pot_states["tomato"]["partially_full"])
+        except Exception:
+            pass
+        try:
+            soups = s.unowned_objects_by_type.get("soup", [])
+            sig["soups_on_counter"] = len(soups)
+        except Exception:
+            pass
+        return sig
+
+    def _task_progress_improved(prev_sig, curr_sig):
+        if not prev_sig or not curr_sig:
+            return False
+        if curr_sig.get("pots_ready", 0) > prev_sig.get("pots_ready", 0):
+            return True
+        if curr_sig.get("pots_cooking", 0) > prev_sig.get("pots_cooking", 0):
+            return True
+        if curr_sig.get("pots_partial", 0) > prev_sig.get("pots_partial", 0):
+            return True
+        if curr_sig.get("soups_on_counter", 0) > prev_sig.get("soups_on_counter", 0):
+            return True
+        if curr_sig.get("ego_holding") != prev_sig.get("ego_holding"):
+            return True
+        if curr_sig.get("mate_holding") != prev_sig.get("mate_holding"):
+            return True
+        return False
+
+    # --- Event: no task progress ---
+    if prev_state is not None:
+        prev_sig = _task_signature(prev_state)
+        curr_sig = _task_signature(state)
+        if _task_progress_improved(prev_sig, curr_sig):
             stuck_counter = 0
-        
-        if stuck_counter >= 3:  # threshold adjustable
-            events.append("no_progress")
+        else:
+            stuck_counter += 1
+        if stuck_counter >= no_progress_window:
+            events.append("lack_of_progress")
     else:
         stuck_counter = 0
-    
-    # --- Event 2: teammate blocking path (adjacent + wanting same tile) ---
-    manhattan_dist = abs(ego_pos[0] - mate_pos[0]) + abs(ego_pos[1] - mate_pos[1])
-    if manhattan_dist == 1:
-        events.append("teammate_blocking")
-    
-    # --- Event 3: deadlock heuristic (stuck + teammate present) ---
-    if "no_progress" in events and "teammate_blocking" in events:
-        events.append("deadlock")
-    
-    # Debug output
-    if prev_state is not None:
-        prev_pos = tuple(prev_state.players[agent_index].position) if len(prev_state.players) > agent_index else None
-        print(f"[EVENT_DEBUG] ego_pos={ego_pos}, prev_pos={prev_pos}, stuck_counter={stuck_counter}, manhattan_dist={manhattan_dist}, events={events}")
-    else:
-        print(f"[EVENT_DEBUG] prev_state=None, ego_pos={ego_pos}, stuck_counter={stuck_counter}, manhattan_dist={manhattan_dist}, events={events}")
     
     return events, stuck_counter
 
@@ -118,7 +142,7 @@ class HINTAgent:
     """
     
     def __init__(self, mlam, layout, model='gpt-5-mini', 
-                 agent_index=None, history_horizon=8, 
+                 agent_index=None, history_horizon=2, 
                  enable_cot=True, enable_memory=True, **kwargs):
         """
         Initialize ProAgent with AdvancedLLMInterpreter planner.
@@ -160,7 +184,7 @@ class HINTAgent:
         
         # Initialize LLM client and interpreter
         from openai import OpenAI
-        # Initialize OpenAI client with API key loaded via openai_key.txt/env
+        # Initialize OpenAI client with API key loaded via env
         self.llm_client = LLMClient(openai_client=OpenAI(api_key=self.openai_api_key()), model=model)
         
         # Always use AdvancedLLMInterpreter (it handles CoT and memory flags internally)
@@ -188,12 +212,18 @@ class HINTAgent:
         self.last_plan: Optional[Dict[str, Any]] = None
         self.last_plan_category: Optional[str] = None
         self.last_plan_rationale: Optional[str] = None
-        self.last_intervention_reason: Optional[str] = None
         self.last_chain_of_thought: Optional[str] = None
         
         # Event-based trigger system for proactive intervention reuse
         self._prev_state = None
         self._stuck_counter = 0
+        self._pos_history = deque(maxlen=8)
+        self.no_progress_window = 10
+        self.cycle_history = 3
+        self.intervention_window = 10
+        self.cyclic_success_window = 3
+        self.lack_progress_success_window = 10
+        self._pending_intervention = None
     
     # ==================== OpenAI Key Management ====================
     
@@ -203,14 +233,7 @@ class HINTAgent:
         if api_key_env:
             self.openai_api_keys = [api_key_env.strip()]
             return
-        # 2) Try workspace root openai_key.txt
-        if os.path.exists(openai_key_file):
-            with open(openai_key_file, "r") as f:
-                context = f.read()
-            self.openai_api_keys = [k for k in context.split('\n') if k.strip()]
-            if self.openai_api_keys:
-                return
-        raise FileNotFoundError("OPENAI_API_KEY not set and openai_key.txt not found in workspace root")
+        raise FileNotFoundError("OPENAI_API_KEY not set in environment")
 
     def openai_api_key(self):
         if self.key_rotation:
@@ -240,62 +263,76 @@ class HINTAgent:
         return layout_prompt
     
     def generate_state_prompt(self, state):
+        """Build a semantic, egocentric scene abstraction (psi_t)."""
         ego = state.players[self.agent_index]
         teammate = state.players[1 - self.agent_index]
+        ego_pos = tuple(ego.position)
+        mate_pos = tuple(teammate.position)
 
-        time_prompt = f"Scene {state.timestep}: "
         ego_object = ego.held_object.name if ego.held_object else "nothing"
         teammate_object = teammate.held_object.name if teammate.held_object else "nothing"
-        ego_state_prompt = f"<Player {self.agent_index}> holds "
-        if ego_object == 'soup':
-            ego_state_prompt += f"a dish with {ego_object} and needs to deliver soup.  "
-        elif ego_object == 'nothing':
-            ego_state_prompt += f"{ego_object}. "
-        else:
-            ego_state_prompt += f"one {ego_object}. "
-        
-        teammate_state_prompt = f"<Player {1-self.agent_index}> holds "
-        if teammate_object == 'soup':
-            teammate_state_prompt += f"a dish with {teammate_object}. "
-        elif teammate_object == "nothing":
-            teammate_state_prompt += f"{teammate_object}. "
-        else:
-            teammate_state_prompt += f"one {teammate_object}. "
 
-        kitchen_state_prompt = "Kitchen states: "
-        prompt_dict = {
-            "empty": "<Pot {id}> is empty; ",
-            "cooking": "<Pot {id}> starts cooking, the soup will be ready after {t} timesteps; ",
-            "ready": "<Pot {id}> has already cooked the soup; ",
-            "1_items": "<Pot {id}> has 1 onion; ",
-            "2_items": "<Pot {id}> has 2 onions; ",
-            "3_items": "<Pot {id}> has 3 onions and is full; "
-        }
+        def rel_desc(from_pos, to_pos):
+            dx = to_pos[0] - from_pos[0]
+            dy = to_pos[1] - from_pos[1]
+            dist = abs(dx) + abs(dy)
+            if dist == 0:
+                return "at same tile"
+            horiz = "east" if dx > 0 else "west"
+            vert = "south" if dy > 0 else "north"
+            if dx == 0:
+                return f"{abs(dy)} {vert}"
+            if dy == 0:
+                return f"{abs(dx)} {horiz}"
+            return f"{abs(dx)} {horiz}, {abs(dy)} {vert} (dist {dist})"
 
-        pot_states_dict = self.mdp.get_pot_states(state)   
+        ego_state_prompt = f"Ego holds {ego_object}. "
+        mate_state_prompt = f"Teammate holds {teammate_object} and is {rel_desc(ego_pos, mate_pos)}. "
 
-        # Version 0.0.1: nested structure by soup type
-        for key in pot_states_dict.keys():
-            if key == "empty":
-                for pos in pot_states_dict[key]: 
-                    pot_id = self.pot_id_to_pos.index(pos)
-                    kitchen_state_prompt += prompt_dict[key].format(id=pot_id)     
-            else: # key = 'onion' or 'tomota'
-                for soup_key in pot_states_dict[key].keys():
-                    # soup_key: ready, cooking, partially_full
-                    for pos in pot_states_dict[key][soup_key]:
-                        pot_id = self.pot_id_to_pos.index(pos)
-                        soup_object = state.get_object(pos)
-                        soup_type, num_items, cook_time = soup_object.state
-                        if soup_key == "cooking":
-                            kitchen_state_prompt += prompt_dict[soup_key].format(id=pot_id, t=self.mdp.soup_cooking_time-cook_time)
-                        elif soup_key == "partially_full":
-                            pass
-                        else:
-                            kitchen_state_prompt += prompt_dict[soup_key].format(id=pot_id)
+        kitchen_state_prompt = "Kitchen: "
+        pot_states_dict = self.mdp.get_pot_states(state)
+        pot_descriptions = []
+        for pot_pos in self.mdp.get_pot_locations():
+            rel = rel_desc(ego_pos, pot_pos)
+            if pot_pos in pot_states_dict["empty"]:
+                pot_descriptions.append(f"pot {rel} empty")
+                continue
+            soup_obj = state.get_object(pot_pos)
+            soup_type, num_items, cook_time = soup_obj.state
+            if num_items < self.mdp.num_items_for_soup:
+                pot_descriptions.append(f"pot {rel} has {num_items} {soup_type}")
+            elif cook_time < self.mdp.soup_cooking_time:
+                remaining = self.mdp.soup_cooking_time - cook_time
+                pot_descriptions.append(f"pot {rel} cooking ({remaining} ticks)")
+            else:
+                pot_descriptions.append(f"pot {rel} ready")
+        if pot_descriptions:
+            kitchen_state_prompt += "; ".join(pot_descriptions) + ". "
 
-        return (self.layout_prompt + time_prompt + ego_state_prompt +
-                teammate_state_prompt + kitchen_state_prompt)
+        onion_locs = self.mdp.get_onion_dispenser_locations()
+        dish_locs = self.mdp.get_dish_dispenser_locations()
+        serve_locs = self.mdp.get_serving_locations()
+        if onion_locs:
+            kitchen_state_prompt += f"Nearest onion dispenser is {rel_desc(ego_pos, onion_locs[0])}. "
+        if dish_locs:
+            kitchen_state_prompt += f"Nearest dish dispenser is {rel_desc(ego_pos, dish_locs[0])}. "
+        if serve_locs:
+            kitchen_state_prompt += f"Serving is {rel_desc(ego_pos, serve_locs[0])}. "
+
+        return ego_state_prompt + mate_state_prompt + kitchen_state_prompt
+
+    def _format_history(self, recent_history):
+        if not recent_history:
+            return "None"
+        items = []
+        for h in recent_history[-self.history_horizon:]:
+            items.append(str(h))
+        return "; ".join(items)
+
+    def _encode_context(self, psi_text, recent_history, human_text):
+        history_text = self._format_history(recent_history)
+        human_part = human_text.strip() if human_text and human_text.strip() else "None"
+        return f"STATE: {psi_text}\nHISTORY: {history_text}\nHUMAN: {human_part}"
     
     # ==================== PLANNER: AdvancedLLMInterpreter Integration ====================
     
@@ -307,17 +344,17 @@ class HINTAgent:
             state: Current game state
             events: Optional list of detected events (if None, will detect them here)
         """
-        # Use text-based state prompt (same as original ProAgent)
-        state_prompt = self.generate_state_prompt(state)
+        # Build semantic state abstraction (psi_t)
+        psi_text = self.generate_state_prompt(state)
         
         # Include events in prompt if provided (events are detected in action() method)
         if events is None:
             # Fallback: detect events here if not provided
             events, _ = detect_environment_events(
-                state, self._prev_state, self._stuck_counter, self.agent_index
+                state, self._prev_state, self._stuck_counter, self.agent_index, self.mdp, self.no_progress_window
             )
         if events:
-            state_prompt += f"\nEVENTS: {events}"
+            psi_text += f" Events: {events}."
             print(f"🔍 Including events in prompt: {events}")
         
         # Get recent history with teammate actions
@@ -330,10 +367,20 @@ class HINTAgent:
         hm = HumanMessage(t=getattr(state, "timestep", 0), text=human_text or "")
         if hm.text.strip():
             print(f"[HUMAN] Consuming intervention at t={hm.t}: '{hm.text}'")
+            if self.enable_memory:
+                self._pending_intervention = {
+                    "timestamp": hm.t,
+                    "start_t": hm.t,
+                    "events": list(events or []),
+                    "saw_cyclic_start": "cyclic_behavior" in (events or []),
+                    "baseline_signature": self._get_progress_signature(state),
+                }
+        # Build full context prompt x_t = Enc(s, h, u)
+        state_prompt = self._encode_context(psi_text, recent_history, hm.text)
         
         try:
             # Get plan from interpreter (pass state, agent_index, and events for intervention recording)
-            plan = self.interpreter.propose_plan(state_prompt, hm, recent_history, state, self.agent_index, events=events)
+            plan = self.interpreter.propose_plan(state_prompt, hm, recent_history, state, self.agent_index, events=events, psi_text=psi_text)
             
             # Store debug info
             try:
@@ -341,17 +388,14 @@ class HINTAgent:
                     "steps": plan.steps,
                 }
                 self.last_plan_category = getattr(plan, 'category', None)
-                self.last_intervention_reason = getattr(plan, 'intervention_reason', None)
                 self.last_chain_of_thought = getattr(plan, 'chain_of_thought', None) if self.enable_cot else ""
                 if self.enable_cot or self.enable_memory:
-                    print(f"[INTP] category={self.last_plan_category} steps={self.last_plan.get('steps')} intervention_reason={self.last_intervention_reason}")
-                    if self.last_chain_of_thought:
-                        print(f"[INTP] CoT: {self.last_chain_of_thought}")
+                    pass
                 else:
-                    print(f"[INTP] steps={self.last_plan.get('steps')}")
+                    pass
             except Exception:
                 pass
-            
+
             # Record a memory event when a new plan is computed (skip if memory disabled)
             if self.enable_memory:
                 try:
@@ -460,7 +504,7 @@ class HINTAgent:
         elif "deliver_soup" in self.current_ml_action:
             return has_soup
         elif "wait" in self.current_ml_action:
-            return 0 < int(self.current_ml_action.split('(')[1][:-1]) <= 20
+            return 0 < int(self.current_ml_action.split('(')[1][:-1]) <= 5
     
     # ==================== CONTROLLER ====================
     
@@ -484,15 +528,10 @@ class HINTAgent:
         counter_objects = self.mdp.get_counter_objects_dict(
             state, list(self.mdp.terrain_pos_dict["X"])
         )
-        try:
-            print(f"[DBG] Player{self.agent_index} pos_and_or={player.pos_and_or}")
-            print(f"[DBG] Onion dispensers={self.mdp.get_onion_dispenser_locations()}, Dish dispensers={self.mdp.get_dish_dispenser_locations()}, Pots={self.mdp.get_pot_locations()}")
-        except Exception:
-            pass
+        # DBG prints removed
         if self.current_ml_action in ["pickup(onion)", "pickup_onion"]:
             # Use shared env's helper name
             raw_goals = am.pickup_onion_actions(state, counter_objects)
-            print(f"[DBG] raw_goals(pickup_onion)={raw_goals}")
             motion_goals = raw_goals
 
         elif self.current_ml_action in ["pickup(dish)", "pickup_dish"]:
@@ -529,7 +568,7 @@ class HINTAgent:
                 player.pos_and_or, mg
             )
         ]
-        print(f"[DBG] filtered_goals({self.current_ml_action}) {len(motion_goals)}/{raw_len}: {motion_goals}")
+        # DBG prints removed
 
         return motion_goals
 
@@ -576,10 +615,7 @@ class HINTAgent:
             action_plan, plan_cost = self.real_time_planner(
                 start_pos_and_or, goal, state
             )     
-            try:
-                print(f"[DBG] plan goal={goal} cost={plan_cost:.1f} first_action={action_plan}")
-            except Exception:
-                pass
+            # DBG prints removed
             if plan_cost < min_cost:
                 best_action = action_plan
                 min_cost = plan_cost
@@ -590,12 +626,6 @@ class HINTAgent:
             else: 
                 return self.get_lowest_cost_action_and_goal(start_pos_and_or, motion_goals)
         
-        # Debug logging for final goal selection
-        try:
-            print(f"[COLLISION_AVOID] SELECTED GOAL: {best_goal} with cost {min_cost:.1f}")
-        except Exception:
-            pass
-            
         return best_goal, best_action
 
     def real_time_planner(self, start_pos_and_or, goal, state):
@@ -611,15 +641,6 @@ class HINTAgent:
             
             # Apply collision penalty to the cost
             adjusted_cost = plan_cost + collision_penalty
-            
-            # Debug logging for collision avoidance
-            try:
-                if collision_penalty > 0:
-                    print(f"[COLLISION_AVOID] Goal {goal}: original_cost={plan_cost:.1f}, collision_penalty={collision_penalty}, adjusted_cost={adjusted_cost:.1f}")
-                if collision_penalty == np.Inf:
-                    print(f"[COLLISION_AVOID] Goal {goal}: PATH BLOCKED - rejecting goal")
-            except Exception:
-                pass
             
             # Return infinite cost if path is completely blocked
             if collision_penalty == np.Inf:
@@ -709,30 +730,23 @@ class HINTAgent:
         self.current_timestep = getattr(state, 'timestep', 0)
         
         # Detect environment events EVERY STEP (not just when generating new ML action)
-        # This allows us to detect deadlocks even when ML action is still in progress
-        print(f"[EVENT_CHECK] Before detection: _prev_state={'exists' if self._prev_state is not None else 'None'}, _stuck_counter={self._stuck_counter}")
+        # This allows us to detect cycles/no-progress even when ML action is still in progress
         events, self._stuck_counter = detect_environment_events(
-            state, self._prev_state, self._stuck_counter, self.agent_index
+            state, self._prev_state, self._stuck_counter, self.agent_index, self.mdp
         )
-        print(f"[EVENT_CHECK] After detection: events={events}, _stuck_counter={self._stuck_counter}")
+        # Cyclic behavior detection (simple loop heuristic)
+        try:
+            ego_pos = state.players[self.agent_index].position
+            self._pos_history.append(ego_pos)
+            if len(self._pos_history) >= self.cycle_history:
+                # Trigger if position repeats with period <= cycle_history
+                for k in range(1, self.cycle_history + 1):
+                    if len(self._pos_history) >= k + 1 and ego_pos == self._pos_history[-k]:
+                        events.append("cyclic_behavior")
+                        break
+        except Exception:
+            pass
         
-        # If events detected and we have a matching pattern, trigger proactive intervention
-        if events and self.enable_memory:
-            # Check for matching intervention patterns
-            patterns = self.memory.semantic.get("intervention_patterns", [])
-            matching = []
-            for p in patterns:
-                p_events = p.get("events_triggered", [])
-                if p_events and all(e in events for e in p_events):
-                    matching.append(p)
-            if matching:
-                best_pattern = matching[-1]  # Most recent
-                if best_pattern.get("low_level_override") and not self.low_level_override:
-                    # Auto-apply the pattern's override
-                    self.low_level_override = best_pattern["low_level_override"]
-                    self.low_level_override_duration = 1  # Apply for 1 step
-                    print(f"✅ Auto-triggered pattern: {best_pattern.get('events_triggered')} → {self.low_level_override}")
-
         # if current ml action does not exist, generate a new one (respect override)
         if self.current_ml_action is None:
             self.current_ml_action = self.generate_ml_action(state, events=events)
@@ -751,6 +765,12 @@ class HINTAgent:
             count += 1
             if count > 3:
                 self.current_ml_action = "wait(1)"
+                self.time_to_wait = 1
+
+        if "wait" in self.current_ml_action and self.current_ml_action_steps == 0 and self.time_to_wait == 0:
+            try:
+                self.time_to_wait = int(self.current_ml_action.split('(')[1][:-1])
+            except Exception:
                 self.time_to_wait = 1
 
         # Check for low-level override first (before any other logic)
@@ -780,22 +800,11 @@ class HINTAgent:
             chosen_action = lis_actions[np.random.randint(0, len(lis_actions))]
         else:
             possible_motion_goals = self.find_motion_goals(state)    
-            # Debug: log dispenser locations and goal count when picking up onion
-            try:
-                if self.current_ml_action in ["pickup(onion)", "pickup_onion"]:
-                    print(f"[DEBUG] Onion dispensers: {self.mdp.get_onion_dispenser_locations()}")
-                print(f"[DEBUG] possible_motion_goals({self.current_ml_action}): {len(possible_motion_goals)}")
-            except Exception:
-                pass
             current_motion_goal, chosen_action = self.choose_motion_goal(
                 start_pos_and_or, 
                 possible_motion_goals, 
                 state
             )
-            try:
-                print(f"[DEBUG] chosen_action={chosen_action}, current_motion_goal={current_motion_goal}")
-            except Exception:
-                pass
 
         # Version 0.0.1: return single action (not tuple)
         self.prev_state = state
@@ -806,17 +815,102 @@ class HINTAgent:
             chosen_action = Action.STAY
         self.current_ml_action_steps += 1
 
-        print(f"[DBG] return chosen_action={chosen_action} type={type(chosen_action)}")
+        # DBG prints removed
         
         # Track history for interpreter
-        # DISABLED: _append_history_tick and _infer_teammate_action disabled for testing
-        # self._append_history_tick(state, chosen_action)
+        self._append_history_tick(state, chosen_action)
         
         # Update previous state for event detection (store reference for next step)
         self._prev_state = state
+        # Update intervention outcome if pending
+        if self.enable_memory:
+            self._update_intervention_outcome(state, events)
         
         # Version 0.0.1: return single action (not tuple)
         return chosen_action
+
+    def _get_progress_signature(self, state):
+        """Extract a compact signature of task progress for intervention evaluation."""
+        sig = {
+            "ego_holding": "nothing",
+            "mate_holding": "nothing",
+            "pots_ready": 0,
+            "pots_cooking": 0,
+            "pots_partial": 0,
+            "soups_on_counter": 0,
+        }
+        try:
+            players = getattr(state, "players", [])
+            if len(players) > 0 and players[0].held_object:
+                sig["ego_holding"] = players[0].held_object.name
+            if len(players) > 1 and players[1].held_object:
+                sig["mate_holding"] = players[1].held_object.name
+        except Exception:
+            pass
+        try:
+            pot_states = self.mdp.get_pot_states(state)
+            sig["pots_ready"] = len(pot_states["onion"]["ready"]) + len(pot_states["tomato"]["ready"])
+            sig["pots_cooking"] = len(pot_states["onion"]["cooking"]) + len(pot_states["tomato"]["cooking"])
+            sig["pots_partial"] = len(pot_states["onion"]["partially_full"]) + len(pot_states["tomato"]["partially_full"])
+        except Exception:
+            pass
+        try:
+            soups = state.unowned_objects_by_type.get("soup", [])
+            sig["soups_on_counter"] = len(soups)
+        except Exception:
+            pass
+        return sig
+
+    def _progress_improved(self, baseline, current):
+        if not baseline or not current:
+            return False
+        if current.get("pots_ready", 0) > baseline.get("pots_ready", 0):
+            return True
+        if current.get("pots_cooking", 0) > baseline.get("pots_cooking", 0):
+            return True
+        if current.get("pots_partial", 0) > baseline.get("pots_partial", 0):
+            return True
+        if current.get("soups_on_counter", 0) > baseline.get("soups_on_counter", 0):
+            return True
+        if current.get("ego_holding") != baseline.get("ego_holding"):
+            return True
+        if current.get("mate_holding") != baseline.get("mate_holding"):
+            return True
+        return False
+
+    def _update_intervention_outcome(self, state, current_events: Optional[List[str]]):
+        """Mark intervention outcome using failure-detector signals."""
+        if not self._pending_intervention:
+            return
+        try:
+            t = getattr(state, "timestep", 0)
+            start_t = self._pending_intervention.get("start_t", t)
+            steps_since = max(0, int(t) - int(start_t))
+            events = current_events or []
+            saw_cyclic_start = bool(self._pending_intervention.get("saw_cyclic_start"))
+
+            if saw_cyclic_start and steps_since <= self.cyclic_success_window:
+                if "cyclic_behavior" not in events:
+                    print(f"[INTERVENTION] success (cycle resolved) at t={t} for intervention {self._pending_intervention['timestamp']}")
+                    self.interpreter.commit_intervention_pattern(self._pending_intervention["timestamp"])
+                    self._pending_intervention = None
+                    return
+
+            baseline = self._pending_intervention.get("baseline_signature")
+            current_sig = self._get_progress_signature(state)
+            if steps_since <= self.lack_progress_success_window and self._progress_improved(baseline, current_sig):
+                print(f"[INTERVENTION] success (task progress) at t={t} for intervention {self._pending_intervention['timestamp']}")
+                self.interpreter.commit_intervention_pattern(self._pending_intervention["timestamp"])
+                self._pending_intervention = None
+                return
+
+            if steps_since >= self.lack_progress_success_window:
+                if not saw_cyclic_start or steps_since >= self.cyclic_success_window:
+                    print(f"[INTERVENTION] failure at t={t} for intervention {self._pending_intervention['timestamp']}")
+                    self.interpreter.discard_intervention_pattern(self._pending_intervention["timestamp"])
+                    self._pending_intervention = None
+        except Exception:
+            return
     
     def _append_history_tick(self, state, action):
         """Append action to recent history for interpreter, including teammate actions."""
@@ -840,17 +934,8 @@ class HINTAgent:
             # Try to infer teammate's action from state changes
             mate_action_inferred = self._infer_teammate_action(state)
             
-            self._recent_history.append({
-                "t": int(getattr(state, "timestep", 0)),
-                "ego_action": str(action),
-                "ego_pos": ego_pos,
-                "ego_ml_action": getattr(self, "current_ml_action", None),
-                "mate_pos": mate_pos,
-                "mate_ml_action": mate_ml_action,
-                "mate_low_level_action": mate_low_level_action,
-                "mate_action_inferred": mate_action_inferred,
-                "mate_holding": str(getattr(getattr(players[1], "held_object", None), "name", "nothing")) if len(players) > 1 else "unknown"
-            })
+            psi_text = self.generate_state_prompt(state)
+            self._recent_history.append(psi_text)
             
             # Keep history bounded
             if len(self._recent_history) > (self.history_horizon * 2):
@@ -921,6 +1006,8 @@ class HINTAgent:
         # Reset event detection state
         self._prev_state = None
         self._stuck_counter = 0
+        self._pos_history.clear()
+        self._pending_intervention = None
     def set_agent_index(self, agent_index):
         """Set the agent index."""
         self.agent_index = agent_index
@@ -948,7 +1035,7 @@ class HINTAgent:
 
     def get_intervention_history(self) -> List[str]:
         return list(self._intervention_history)
-    
+
     def get_intervention_stats(self) -> Dict[str, Any]:
         """Get statistics about interpreter usage and interventions."""
         processed = len([h for h in self._intervention_history])

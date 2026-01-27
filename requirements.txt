@@ -1,4 +1,4 @@
-# Requirements for running proagent_demo.py
+# Requirements for running the demos
 # This includes only the packages needed for the demo
 
 # Core dependencies

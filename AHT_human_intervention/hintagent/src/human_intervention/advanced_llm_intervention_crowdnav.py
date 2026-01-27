@@ -3,8 +3,9 @@ import os
 import json
 import time
 import re
+import numpy as np
 from dataclasses import dataclass, asdict, field
-from typing import Optional, List, Dict, Any, Literal, Tuple
+from typing import Optional, List, Dict, Any, Literal, Tuple, Union
 from openai import OpenAI
 
 try:
@@ -19,7 +20,7 @@ except ImportError:
 # Allowed waypoint actions (0-7)
 CROWDNAV_ALLOWED_WAYPOINT_ACTIONS = list(range(8))  # [0, 1, 2, 3, 4, 5, 6, 7]
 
-Category = Literal["policy", "env", "teammate", "vague"]
+Category = Literal["policy", "env", "teammate", "general_hint", "null"]
 
 # ---------------------------------------------------------------------
 # CoT + Memory Interpreter for Human Interventions in CrowdNav-AHT
@@ -33,9 +34,7 @@ class Plan:
 	chain_of_thought: str                # Explicit CoT reasoning with full reasoning process
 	category: Category                    # model's classification of the human msg
 	teammate_behavior: str = ""           # Teammate navigation pattern description
-	memory_writes: List[Dict[str, Any]] = field(default_factory=list)
-	low_level_override: Optional[int] = None  # Direct waypoint override (0-7)
-	intervention_reason: str = ""         # LLM's inference of why human provided this intervention
+	low_level_override: Optional[Dict[str, float]] = None  # Direct velocity override (vx, vy)
 
 	def to_dict(self) -> Dict[str, Any]:
 		return {
@@ -43,40 +42,17 @@ class Plan:
 			"chain_of_thought": self.chain_of_thought,
 			"category": self.category,
 			"teammate_behavior": self.teammate_behavior,
-			"memory_writes": self.memory_writes,
 			"low_level_override": self.low_level_override,
-			"intervention_reason": self.intervention_reason,
 		}
 
 class AgentMemory:
 	"""
-	CrowdNav-specific persistent memory with structured navigation state tracking.
-	- semantic: long-lived facts, rules, and dynamic navigation state
+	CrowdNav-specific persistent memory focused on intervention examples.
+	- semantic: successful intervention patterns only
 	- episodic: recent events for summarization
 	"""
 	def __init__(self, episodic_cap: int = 500):
 		self.semantic: Dict[str, Any] = {
-			# Navigation patterns and preferences
-			"navigation_patterns": {
-				"preferred_directions": [],      # [0, 3, 0] - preferred waypoint directions
-				"avoid_directions": [],          # [1, 2] - directions to avoid
-				"successful_paths": [],          # [{"waypoints": [0,3,0], "outcome": "success"}]
-			},
-			# Obstacle and crowd memory
-			"obstacle_memory": [],               # [{"pos": [x,y], "type": "crowd"|"static", "timestamp": t}]
-			# Teammate hypothesis & coordination contract
-			"teammate_model": {
-				"since_t": None,
-				"behavior_description": "",
-			},
-			# Human/operator preferences or "house rules"
-			"human_prefs": {
-				# e.g., "avoid_crowds": True, "prefer_direct_path": True
-			},
-			# Compact "if…then…" contracts derived from interventions or LLM
-			"playbook": [
-				# {"if": "crowd_ahead AND clear_alternative", "then": [2, 0, 3], "note": "detour around crowd"}
-			],
 			# Learned intervention patterns to avoid future human corrections
 			"intervention_patterns": [],
 		}
@@ -109,110 +85,21 @@ class AgentMemory:
 			return "No recent notable events."
 		return "Recent: " + "; ".join(notes[:8])
 
-	def upsert_semantic(self, patch: Dict[str, Any]) -> None:
-		"""
-		Conservative merge of small dict patches from the model (after gating).
-		Only whitelisted top-level keys are merged.
-		"""
-		WHITELIST = {"navigation_patterns", "obstacle_memory", "teammate_model", "human_prefs",
-					 "playbook", "intervention_patterns"}
-		for k, v in patch.items():
-			if k not in WHITELIST:
-				continue
-			if isinstance(v, list):
-				base = self.semantic.get(k, [])
-				base.extend(v)
-				if k == "playbook":
-					seen = set()
-					dedup = []
-					for item in base:
-						sig = item.get("if", json.dumps(item, sort_keys=True))
-						if sig in seen:
-							continue
-						seen.add(sig)
-						dedup.append(item)
-					base = dedup[-16:]
-				self.semantic[k] = base
-			elif isinstance(v, dict) and isinstance(self.semantic.get(k, {}), dict):
-				# Special handling for teammate_model to preserve behavior_description
-				if k == "teammate_model" and "behavior_description" in v:
-					# Update behavior description with since_t timestamp
-					pass  # since_t is already set in the write
-				# Deep merge for nested dicts like navigation_patterns
-				self._deep_merge(self.semantic[k], v)
-			else:
-				self.semantic[k] = v
-
-	def _merge_list_by_pos(self, dest: List[Dict[str, Any]], src: List[Dict[str, Any]], key="pos", cap=32):
-		"""Merge lists by position to avoid duplicates."""
-		# Build index mapping position tuples to indices
-		idx = {}
-		for i, it in enumerate(dest):
-			if key in it:
-				val = it.get(key, [])
-				# Only create tuple if val is a list/tuple that can be converted
-				if isinstance(val, (list, tuple)):
-					try:
-						idx[tuple(val)] = i
-					except TypeError:
-						# Skip if value can't be converted to tuple (e.g., contains unhashable types)
-						pass
-		
-		# Merge source items
-		for it in src:
-			if key in it:
-				val = it.get(key, [])
-				if isinstance(val, (list, tuple)):
-					try:
-						p = tuple(val)
-						if p in idx:
-							dest[idx[p]].update(it)
-						else:
-							dest.append(it)
-					except TypeError:
-						# Skip if value can't be converted to tuple
-						dest.append(it)
-				else:
-					dest.append(it)
-			else:
-				dest.append(it)
-		
-		# Cap the list size
-		if len(dest) > cap:
-			del dest[:-cap]
-
-	def _deep_merge(self, base_dict: Dict[str, Any], update_dict: Dict[str, Any]) -> None:
-		"""Deep merge update_dict into base_dict."""
-		for key, value in update_dict.items():
-			if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
-				self._deep_merge(base_dict[key], value)
-			elif key == "obstacle_memory" and isinstance(value, list):
-				base = base_dict.get(key, [])
-				self._merge_list_by_pos(base, value)
-				base_dict[key] = base
-			else:
-				base_dict[key] = value
+	def update_intervention_outcome(self, timestamp: int, outcome: str) -> None:
+		"""Update the stored intervention pattern outcome by timestamp."""
+		try:
+			patterns = self.semantic.get("intervention_patterns", [])
+			for i in range(len(patterns) - 1, -1, -1):
+				if patterns[i].get("timestamp") == timestamp:
+					patterns[i]["outcome"] = outcome
+					return
+		except Exception:
+			return
 
 	def prompt_view(self) -> Dict[str, Any]:
 		"""Compact view for the model prompt."""
 		sem = self.semantic
-		tm = sem["teammate_model"]
-		np = sem.get("navigation_patterns", {})
-		
-		# Keep short: last 2-3 key obstacle memories
-		key_obstacles = sem.get("obstacle_memory", [])[-3:]
-		
 		return {
-			"navigation_patterns": {
-				"preferred_directions": np.get("preferred_directions", [])[-5:],
-				"avoid_directions": np.get("avoid_directions", []),
-			},
-			"obstacle_memory": key_obstacles,
-			"teammate_model": {
-				"since_t": tm.get("since_t"),
-				"behavior_description": tm.get("behavior_description"),
-			},
-			"playbook": sem.get("playbook", [])[-4:],  # Keep last 4 entries
 			"summary": self.summarize_recent(),
 			"intervention_patterns": sem.get("intervention_patterns", [])[-4:],  # Keep last 4 entries
 		}
@@ -222,6 +109,16 @@ class AgentMemory:
 class HumanMessage:
 	t: int
 	text: str
+
+
+def _describe_situation_for_memory(state_prompt: str, events=None, psi_text: Optional[str] = None) -> str:
+	"""Compact textual summary for memory retrieval."""
+	base = (psi_text or state_prompt or "").strip()
+	if len(base) > 400:
+		base = base[:400] + "..."
+	if events:
+		return f"{base} | events: {', '.join(events)}"
+	return base
 
 def _extract_first_json_object(text: str) -> Tuple[dict | None, str | None]:
     """
@@ -288,17 +185,29 @@ class LLMClient:
         Request structured JSON output from GPT-5-mini.
         Returns parsed dict or raises ValueError with raw LLM text on failure.
         """
-        try:
+        def _call(system_prompt, user_payload):
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)}
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)}
                 ],
                 response_format={"type": "json_object"},
-                max_completion_tokens=2048,  
-				reasoning_effort="low",
+                max_completion_tokens=2048,
             )
+            return response
+
+        def _fallback(reason: str):
+            return {
+                "steps": [0],
+                "chain_of_thought": f"Safe fallback: {reason}",
+                "category": "general_hint",
+                "teammate_behavior": "",
+                "low_level_override": None,
+            }
+
+        try:
+            response = _call(system, user)
 
             try:
                 text_out = response.choices[0].message.content
@@ -316,11 +225,9 @@ class LLMClient:
                 obj = {
                     "steps": [0],
                     "chain_of_thought": "Response was truncated or empty, using safe fallback",
-                    "category": "vague",
+                    "category": "general_hint",
                     "teammate_behavior": "",
-                    "memory_writes": [],
                     "low_level_override": None,
-                    "intervention_reason": ""
                 }
                 # Skip to validation (will pass since we set all required fields)
                 text_out = None  # Signal that we already have obj
@@ -337,16 +244,13 @@ class LLMClient:
                             obj = {
                                 "steps": [0],
                                 "chain_of_thought": "Response was truncated, using safe fallback",
-                                "category": "vague",
+                                "category": "general_hint",
                                 "teammate_behavior": "",
-                                "memory_writes": [],
                                 "low_level_override": None,
-                                "intervention_reason": ""
                             }
                         else:
                             raise ValueError(f"Could not parse JSON: {err}\nRaw: {text_out}")
             
-            print(f"[LLM-DEBUG] Raw LLM response: {obj}")
             
             # Remove any properties not in the schema
             # This is necessary because the schema has additionalProperties: False
@@ -356,40 +260,50 @@ class LLMClient:
             # Repair common issues before validation
             # Ensure required fields exist FIRST (before validation)
             obj.setdefault("steps", [0])
+            if not isinstance(obj.get("steps"), list) or len(obj["steps"]) == 0:
+                obj["steps"] = [0]
+            elif len(obj["steps"]) > 1:
+                # Keep strict maxItems=1 by truncating extra waypoints
+                obj["steps"] = obj["steps"][:1]
             
             # Fix category field - ensure it's always a valid enum value
-            category = obj.get("category", "vague")
-            if not category or category.strip() == "" or category not in ["policy", "env", "teammate", "vague"]:
-                obj["category"] = "vague"
+            category = obj.get("category", "general_hint")
+            if not category or category.strip() == "" or category not in ["policy", "env", "teammate", "general_hint", "null"]:
+                obj["category"] = "general_hint"
             if "chain_of_thought" in allowed_properties:
                 obj.setdefault("chain_of_thought", "No chain of thought provided")
             obj.setdefault("teammate_behavior", "")
-            if "memory_writes" in allowed_properties:
-                obj.setdefault("memory_writes", [])
             if "low_level_override" in allowed_properties:
                 obj.setdefault("low_level_override", None)
-            if "intervention_reason" in allowed_properties:
-                obj.setdefault("intervention_reason", "")
             
             # Truncate fields that have maxLength constraints before validation
             if "chain_of_thought" in obj and isinstance(obj["chain_of_thought"], str):
                 obj["chain_of_thought"] = obj["chain_of_thought"][:512]  # Match schema maxLength
             if "teammate_behavior" in obj and isinstance(obj["teammate_behavior"], str):
                 obj["teammate_behavior"] = obj["teammate_behavior"][:220]  # Match schema maxLength
-            if "intervention_reason" in obj and isinstance(obj["intervention_reason"], str):
-                obj["intervention_reason"] = obj["intervention_reason"][:300]  # Match schema maxLength
             
-            # Validate against schema
+            # Validate against schema (one repair attempt)
             try:
                 validate(instance=obj, schema=schema)
             except ValidationError as e:
-                raise ValueError(f"JSON did not match schema: {e.message}. Parsed: {obj!r}")
+                try:
+                    repair_system = system + "\nFix the JSON to match the schema exactly. Return ONLY JSON."
+                    repair_user = dict(user)
+                    repair_user["__validation_error"] = e.message
+                    repair_user["__invalid_output"] = obj
+                    repaired_resp = _call(repair_system, repair_user)
+                    repaired_text = repaired_resp.choices[0].message.content
+                    repaired = json.loads(repaired_text)
+                    repaired = {k: v for k, v in repaired.items() if k in allowed_properties}
+                    validate(instance=repaired, schema=schema)
+                    return repaired
+                except Exception:
+                    return _fallback(f"schema validation failed: {e.message}")
             
-            print(f"[LLM-DEBUG] Parsed: {obj}")
             return obj
 
         except Exception as e:
-            raise RuntimeError(f"LLMClient.respond_json failed: {e}")
+            return _fallback(f"LLMClient.respond_json failed: {e}")
 
 
 # JSON Schema for Plan output
@@ -403,28 +317,59 @@ PLAN_JSON_SCHEMA = {
 			"type": "array",
 			"items": {"type": "integer", "minimum": 0, "maximum": 7},
 			"minItems": 1,
-			"maxItems": 3,
+		"maxItems": 1,
 		},
 		"chain_of_thought": {"type": "string", "maxLength": 512}, 
-		"category": {"type": "string", "enum": ["policy", "env", "teammate", "vague"]},
+		"category": {"type": "string", "enum": ["policy", "env", "teammate", "general_hint", "null"]},
 		"teammate_behavior": {"type": "string", "maxLength": 220},
-		"memory_writes": {
-			"type": "array",
-			"items": {"type": "object"},
-			"default": []
-		},
 		"low_level_override": {
-			"type": ["integer", "null"],
-			"enum": [0, 1, 2, 3, 4, 5, 6, 7, None],
+			"oneOf": [
+				{
+					"type": "object",
+					"additionalProperties": False,
+					"required": ["vx", "vy"],
+					"properties": {
+						"vx": {"type": "number"},
+						"vy": {"type": "number"}
+					}
+				},
+				{"type": "null"}
+			],
 			"default": None
-		},
-		"intervention_reason": {
-			"type": "string",
-			"maxLength": 300,
-			"default": ""
 		},
 	},
 }
+
+
+def _get_system_rules(enable_cot: bool = True, enable_memory: bool = True) -> str:
+	"""Return system rules with optional CoT/memory sections removed."""
+	script_dir = os.path.dirname(os.path.abspath(__file__))
+	rules_file = os.path.join(script_dir, "advanced_llm_system_rules_crowdnav.txt")
+	try:
+		with open(rules_file, 'r', encoding='utf-8') as f:
+			base_rules = f.read()
+	except Exception as e:
+		print(f"[WARNING] Could not load system rules: {e}")
+		base_rules = "You are a navigation assistant for a robot in a crowd."
+
+	if enable_cot and enable_memory:
+		return base_rules
+
+	result = base_rules
+
+	if not enable_memory:
+		# Remove memory line from INPUT CONTEXT
+		result = re.sub(r'-\s*memory:.*\n', '', result, flags=re.IGNORECASE)
+		# Remove Memory Use step from CHAIN OF THOUGHT
+		result = re.sub(r'5\.\s*Memory Use:.*\n', '', result, flags=re.IGNORECASE)
+
+	if not enable_cot:
+		# Remove CHAIN OF THOUGHT block
+		result = re.sub(r'CHAIN OF THOUGHT.*?\n\n', '', result, flags=re.DOTALL | re.IGNORECASE)
+		# Set chain_of_thought field to empty in output description
+		result = re.sub(r'"chain_of_thought":\s*".*?"', '"chain_of_thought": ""', result)
+
+	return result
 
 
 class AdvancedLLMInterpreter:
@@ -433,26 +378,134 @@ class AdvancedLLMInterpreter:
 	Uses LLM to generate structured plans from text observations and human messages.
 	"""
 	
-	def __init__(self, llm_client: LLMClient, memory: AgentMemory, history_horizon: int = 6):
+	def __init__(self, llm_client: LLMClient, memory: AgentMemory, history_horizon: int = 6,
+	             enable_cot: bool = True, enable_memory: bool = True):
 		self.llm = llm_client
 		self.memory = memory
 		self.history_horizon = history_horizon
-		
-		# Load system rules
-		script_dir = os.path.dirname(os.path.abspath(__file__))
-		rules_file = os.path.join(script_dir, "advanced_llm_system_rules_crowdnav.txt")
+		self.enable_cot = enable_cot
+		self.enable_memory = enable_memory
+		self._last_teammate_behavior = ""
+		self._pending_patterns: Dict[int, Dict[str, Any]] = {}
+		self.system_rules = _get_system_rules(enable_cot=enable_cot, enable_memory=enable_memory)
+
+	def _embed_text(self, text: str) -> Optional[List[float]]:
+		"""Embed text using a sentence encoder (OpenAI embeddings)."""
+		text = (text or "").strip()
+		if not text:
+			return None
 		try:
-			with open(rules_file, 'r', encoding='utf-8') as f:
-				self.system_rules = f.read()
-		except Exception as e:
-			print(f"[WARNING] Could not load system rules: {e}")
-			self.system_rules = "You are a navigation assistant for a robot in a crowd."
+			resp = self.llm.client.embeddings.create(
+				model="text-embedding-3-small",
+				input=[text],
+			)
+			if not resp or not resp.data:
+				return None
+			return resp.data[0].embedding
+		except Exception:
+			return None
+
+	@staticmethod
+	def _cosine_sim(a: List[float], b: List[float]) -> float:
+		if not a or not b or len(a) != len(b):
+			return -1.0
+		na = np.linalg.norm(a)
+		nb = np.linalg.norm(b)
+		if na == 0 or nb == 0:
+			return -1.0
+		return float(np.dot(a, b) / (na * nb))
+
+	def _select_icl_examples(self, state_prompt: str, events=None, k: int = 4, psi_text: Optional[str] = None) -> List[Dict[str, Any]]:
+		"""Select a small set of ICL examples from intervention_patterns."""
+		patterns = [
+			p for p in self.memory.semantic.get("intervention_patterns", [])
+			if p.get("outcome") == "success"
+		]
+		if not patterns:
+			return []
+		query_text = psi_text or _describe_situation_for_memory(state_prompt, events, psi_text=psi_text)
+		query_emb = self._embed_text(query_text) if query_text else None
+		
+		if query_emb:
+			def score(p):
+				emb = p.get("embedding")
+				if emb is None:
+					p_text = p.get("psi_text") or ""
+					emb = self._embed_text(p_text) if p_text else None
+				sim = self._cosine_sim(query_emb, emb) if emb else -1.0
+				return (sim, p.get("timestamp", 0))
+			sorted_p = sorted(patterns, key=score, reverse=True)
+		elif events:
+			def score(p):
+				pe = set(p.get("detected_failures") or [])
+				ce = set(events)
+				overlap = len(pe.intersection(ce))
+				return (overlap, p.get("timestamp", 0))
+			sorted_p = sorted(patterns, key=score, reverse=True)
+		else:
+			sorted_p = patterns[-k:]
+		
+		selected = sorted_p[:k]
+		examples = []
+		for p in selected:
+			examples.append({
+				"timestamp": p.get("timestamp"),
+				"detected_failures": p.get("detected_failures", []),
+				"state_abstraction": p.get("psi_text", ""),
+				"outcome": p.get("outcome", "unknown"),
+				"action_taken": p.get("action_taken"),
+				"low_level_override": p.get("low_level_override"),
+			})
+		return examples
+
+	def _store_intervention_pattern(self, plan: Plan, human_message: str, state_prompt: str, events=None, t: int = 0, psi_text: Optional[str] = None) -> None:
+		"""Queue intervention pattern; commit only on success."""
+		try:
+			if not human_message.strip():
+				return
+			psi_snapshot = psi_text or ""
+			pattern = {
+				"timestamp": t,
+				"human_message": human_message,
+				"detected_failures": events or [],
+				"action_taken": plan.steps[0] if plan.steps else None,
+				"low_level_override": plan.low_level_override,
+				"category": getattr(plan, "category", None),
+				"teammate_behavior": getattr(plan, "teammate_behavior", ""),
+				"psi_text": psi_snapshot,
+				"embedding": self._embed_text(psi_snapshot) if psi_snapshot else None,
+				"outcome": "pending",
+			}
+			self._pending_patterns[t] = pattern
+		except Exception:
+			return
+
+	def commit_intervention_pattern(self, timestamp: int) -> None:
+		pattern = self._pending_patterns.pop(timestamp, None)
+		if not pattern:
+			return
+		pattern["outcome"] = "success"
+		self.memory.semantic.setdefault("intervention_patterns", []).append(pattern)
+		if len(self.memory.semantic["intervention_patterns"]) > 32:
+			self.memory.semantic["intervention_patterns"] = self.memory.semantic["intervention_patterns"][-32:]
+
+	def discard_intervention_pattern(self, timestamp: int) -> None:
+		pattern = self._pending_patterns.pop(timestamp, None)
+		if not pattern:
+			return
+		pattern["outcome"] = "failure"
+		self.memory.semantic.setdefault("intervention_patterns", []).append(pattern)
+		if len(self.memory.semantic["intervention_patterns"]) > 32:
+			self.memory.semantic["intervention_patterns"] = self.memory.semantic["intervention_patterns"][-32:]
 
 	def interpret(
 		self,
 		state_prompt: str,
 		recent_history: List[Dict[str, Any]],
 		human_message: Optional[str] = None,
+		events: Optional[List[str]] = None,
+		timestep: Optional[int] = None,
+		psi_text: Optional[str] = None,
 	) -> Plan:
 		"""
 		Generate a plan from current state, history, and optional human intervention.
@@ -465,40 +518,74 @@ class AdvancedLLMInterpreter:
 		Returns:
 			Plan object with waypoint actions and reasoning
 		"""
-		memory_view = self.memory.prompt_view()
+		if self.enable_memory:
+			memory_view = self.memory.prompt_view()
+			failure_events = {"lack_of_progress", "cyclic_behavior"}
+			use_retrieval = (not human_message or not human_message.strip()) and events and any(
+				e in failure_events for e in events
+			)
+			icl_examples = self._select_icl_examples(state_prompt, events=events, k=3, psi_text=psi_text) if use_retrieval else []
+			# Do not duplicate ICL examples inside memory_view
+			memory_view["intervention_patterns"] = []
+		else:
+			memory_view = {}
+			icl_examples = []
 		
 		# Build user prompt
 		user_prompt = {
-			"state_prompt": state_prompt,
-			"recent_history": recent_history[-self.history_horizon:],
-			"memory_view": memory_view,
+			"state": state_prompt,
+			"history": recent_history[-self.history_horizon:],
+			"memory": memory_view,
+			"detected_failures": events or [],
+			"icl_examples": icl_examples,
+			"previous_teammate_descriptor": self._last_teammate_behavior,
 		}
 		
 		if human_message:
 			user_prompt["human_message"] = human_message
 		
-		raw_plan = self.llm.respond_json(PLAN_JSON_SCHEMA, self.system_rules, user_prompt)
-		# Apply memory writes
-		for write in raw_plan.get("memory_writes", []):
-			self.memory.upsert_semantic(write)
-		
+		try:
+			raw_plan = self.llm.respond_json(PLAN_JSON_SCHEMA, self.system_rules, user_prompt)
+			try:
+				print(f"[LLM] Raw plan: {json.dumps(raw_plan, ensure_ascii=True)}")
+				if self.enable_cot:
+					print(f"[COT] {raw_plan.get('chain_of_thought', '')}")
+				low_level_override = raw_plan.get("low_level_override")
+				if low_level_override is not None:
+					print(f"[LLM] Low-level override: {low_level_override}")
+			except Exception:
+				pass
+		except Exception:
+			return Plan(
+				steps=[0],
+				chain_of_thought="Safe fallback due to verification failure",
+				category="general_hint",
+				teammate_behavior="",
+				low_level_override=None,
+			)
 		# Record in episodic memory
-		self.memory.write_events([{
-			"type": "plan",
-			"t": len(self.memory.episodic),
-			"steps": raw_plan.get("steps", []),
-			"category": raw_plan.get("category", ""),
-			"human_message": human_message,
-		}])
+		if self.enable_memory:
+			self.memory.write_events([{
+				"type": "plan",
+				"t": len(self.memory.episodic),
+				"steps": raw_plan.get("steps", []),
+				"category": raw_plan.get("category", ""),
+				"human_message": human_message,
+			}])
 		
 		# Convert to Plan dataclass
-		return Plan(
+		plan = Plan(
 			steps=raw_plan.get("steps", [0]),
-			chain_of_thought=raw_plan.get("chain_of_thought", ""),
-			category=raw_plan.get("category", "vague"),
+			chain_of_thought=raw_plan.get("chain_of_thought", "") if self.enable_cot else "",
+			category=raw_plan.get("category", "general_hint"),
 			teammate_behavior=raw_plan.get("teammate_behavior", ""),
-			memory_writes=raw_plan.get("memory_writes", []),
 			low_level_override=raw_plan.get("low_level_override"),
-			intervention_reason=raw_plan.get("intervention_reason", ""),
 		)
-
+		if plan.teammate_behavior:
+			self._last_teammate_behavior = plan.teammate_behavior
+		
+		# Store intervention pattern for retrieval (if human intervened)
+		if self.enable_memory and human_message and human_message.strip():
+			self._store_intervention_pattern(plan, human_message, psi_text or state_prompt, events=events, t=int(timestep or 0), psi_text=psi_text)
+		
+		return plan

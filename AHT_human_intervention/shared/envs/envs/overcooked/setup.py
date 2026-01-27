@@ -6,8 +6,8 @@ setup(
     name="overcooked_ai",
     version="0.0.1",
     description="Cooperative multi-agent environment based on Overcooked",
-    author="Micah Carroll",
-    author_email="micah.d.carroll@berkeley.edu",
+    author="Anonymous",
+    author_email="anonymous@example.com",
     packages=find_packages(),
     install_requires=["numpy", "tqdm", "gym"],
 )

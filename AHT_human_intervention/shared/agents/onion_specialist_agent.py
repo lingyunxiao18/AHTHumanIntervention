@@ -133,7 +133,6 @@ class OnionSpecialistAgent:
         path = self._bfs_path(current_pos, target_pos)
         
         if not path or len(path) < 2:
-            print(f"[ONION_SPEC] {self.agent_name}: No path found from {current_pos} to {target_pos}!")
             return 0
         
         # Get next position in path
@@ -153,7 +152,6 @@ class OnionSpecialistAgent:
         else:
             action = 0  # STAY
         
-        print(f"[ONION_SPEC] {self.agent_name}: BFS path {len(path)} steps, moving {current_pos} → {next_pos} (action {action})")
         return action
     
     def _is_adjacent(self, pos1, pos2):
@@ -246,7 +244,6 @@ class OnionSpecialistAgent:
                     # No pot object found, assume empty
                     empty_pots.append(pot_pos)
             
-            print(f"[ONION_SPEC] {self.agent_name} found empty pots: {empty_pots}")
             return empty_pots
             
         except Exception as e:
@@ -293,10 +290,8 @@ class OnionSpecialistAgent:
         pot_states = self._analyze_pot_states(state)
         # Only stop if ALL pots are ready OR ALL pots are cooking (no space for more onions)
         if pot_states['any_pot_ready'] and not pot_states['any_pot_has_space']:
-            print(f"[ONION_SPEC] {self.agent_name}: All pots ready - STOPPING work!")
             return "WAIT"  # Stop working when all pots are ready
         elif pot_states['any_pot_cooking'] and not pot_states['any_pot_has_space']:
-            print(f"[ONION_SPEC] {self.agent_name}: All pots cooking - STOPPING work!")
             return "WAIT"  # Stop working when all pots are cooking
         
         # ONLY handle onion workflow
@@ -316,15 +311,12 @@ class OnionSpecialistAgent:
         
         if macro == "GET_ONION":
             if not self.onion_locations:
-                print(f"[ONION_SPEC] {self.agent_name}: No onion dispensers available!")
                 return 0
             
             target = self._get_closest_target(ego_pos, self.onion_locations)
-            print(f"[ONION_SPEC] {self.agent_name} targeting onion dispenser: {target}")
             
             if self._is_adjacent(ego_pos, target):
                 if self._is_facing_target(ego_pos, ego_orientation, target):
-                    print(f"[ONION_SPEC] {self.agent_name} picking up onion!")
                     return 5  # INTERACT
                 else:
                     return self._get_direction_to_face(ego_pos, target)
@@ -334,7 +326,6 @@ class OnionSpecialistAgent:
         elif macro == "PUT_ONION_IN_POT":
             empty_pots = self._find_empty_pot(state)
             if not empty_pots:
-                print(f"[ONION_SPEC] {self.agent_name}: No empty pots available! All pots full.")
                 return 0  # Stay - intervention needed
             
             # GREEDY: Prioritize pots that already have onions (to fill them faster)
@@ -365,46 +356,36 @@ class OnionSpecialistAgent:
                 # Sort by number of onions (descending - fill the fullest first)
                 partial_pots.sort(key=lambda x: x[1], reverse=True)
                 target = partial_pots[0][0]
-                print(f"[ONION_SPEC] {self.agent_name} targeting PARTIAL pot: {target} ({partial_pots[0][1]} onions)")
             else:
                 target = self._get_closest_target(ego_pos, truly_empty_pots)
-                print(f"[ONION_SPEC] {self.agent_name} targeting empty pot: {target}")
             
             # Check if we're adjacent to the pot
             if self._is_adjacent(ego_pos, target):
                 if self._is_facing_target(ego_pos, ego_orientation, target):
-                    print(f"[ONION_SPEC] {self.agent_name} putting onion in pot!")
                     return 5  # INTERACT
                 else:
                     return self._get_direction_to_face(ego_pos, target)
             else:
                 # Find an adjacent position to the pot, not the pot itself
                 adjacent_positions = self._find_adjacent_positions(target)
-                print(f"[ONION_SPEC] {self.agent_name} adjacent positions to {target}: {adjacent_positions}")
                 if adjacent_positions:
                     # Find the closest adjacent position
                     closest_adjacent = self._get_closest_target(ego_pos, adjacent_positions)
-                    print(f"[ONION_SPEC] {self.agent_name} moving to adjacent position: {closest_adjacent}")
                     return self._move_towards_target(ego_pos, closest_adjacent)
                 else:
                     # Fallback: move towards pot directly
-                    print(f"[ONION_SPEC] {self.agent_name} no adjacent positions found, moving to pot directly")
                     return self._move_towards_target(ego_pos, target)
         
         elif macro == "WAIT":
             # Stop working - all pots are ready/cooking
-            print(f"[ONION_SPEC] {self.agent_name}: Waiting - all pots ready/cooking")
             return 0  # Stay in place
         
         elif macro == "CONFUSED":
             # Agent is holding something it doesn't understand
             ego_item = self._get_item_name(ego.get_object()) if ego.has_object() else "none"
-            print(f"[ONION_SPEC] {self.agent_name}: CONFUSED! Holding {ego_item} but only know onions!")
-            print(f"[ONION_SPEC] {self.agent_name}: INTERVENTION NEEDED - Don't know what to do!")
             return 0  # Stay in place - human intervention required
         
         else:
-            print(f"[ONION_SPEC] {self.agent_name}: Unknown macro {macro}")
             return 0
     
     def get_action(self, state):
