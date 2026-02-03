@@ -4,10 +4,7 @@ __version__ = "0.1.0"
 # pipelines/ contains the reorganized code structure
 
 __all__ = [
-    "algorithms",
-    "runner", 
-    "scripts",
-    "utils",
-    "pipelines",
-    "shared",
+    "demos", 
+    "hintagent",
+    "shared"
 ]

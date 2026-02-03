@@ -135,7 +135,6 @@ def main():
     )
     parser.add_argument('--ego_variant', type=str, default=None,
                         help='Override ego variant label (ProAgent, YAY, CoT, HINT)')
-    parser.add_argument('--participant_id', type=str, default='P000')
     parser.add_argument('--title_teammate', type=str, default=None,
                         help='Optional teammate label for the window title')
     parser.add_argument('--title_layout', type=str, default=None,
@@ -221,7 +220,7 @@ def main():
     title_layout = args.title_layout or layout_name
     title_teammate = args.title_teammate or teammate_key
     pygame.display.set_caption(
-        f"Overcooked | participant={args.participant_id} | ego={ego_variant} | layout={title_layout} | teammate={title_teammate}"
+        f"Overcooked | ego={ego_variant} | layout={title_layout} | teammate={title_teammate}"
     )
     teammate_map = {
         'onion_specialist': lambda mdp: OnionSpecialistAgent(mdp, agent_idx=1, agent_name='OnionSpec'),
@@ -356,18 +355,16 @@ def main():
                         if cmd:
                             # Use the advanced intervention system
                             try:
-                                print(f"🎯 Applying intervention: '{cmd}'")
+                                # Suppress verbose intervention logs
                                 if hasattr(p0, "process_human_intervention"):
                                     success = p0.process_human_intervention(cmd)
                                     if success:
-                                        print(f"✅ Intervention processed: '{cmd}'")
                                         if hasattr(p0, "get_intervention_stats"):
                                             stats = p0.get_intervention_stats()
-                                            print(f"📊 Agent stats after intervention: {stats}")
                                     else:
-                                        print(f"❌ Intervention failed: '{cmd}'")
+                                        pass
                                 else:
-                                    print("ℹ️ Interventions are not supported for ProAgent.")
+                                    pass
                             except Exception as e:
                                 print(f"❌ Intervention error: {e}")
                                 import traceback
@@ -403,26 +400,9 @@ def main():
                 a0 = res0
             a1 = p1.action(state)
 
-            # Log per-step actions and current medium-level plan
-            try:
-                ml = getattr(p0, 'current_ml_action', None)
-                # Get new interpreter plan info
-                last_plan = getattr(p0, 'last_plan', None)
-                
-                a0_conv = convert_action(a0)
-                a1_conv = convert_action(a1)
-                joint = (a0_conv, a1_conv)
-                
-                # Enhanced logging with new interpreter output
-                if last_plan:
-                    print(f"[STEP {step}] Interpreter Plan Steps: {last_plan.get('steps', [])}")
-                print(f"[STEP {step}] P0_action_raw={a0}, P0_action_conv={a0_conv}, P0_ml_action={ml}")
-                
-                # Get intervention stats
-                stats = p0.get_intervention_stats()
-                print(f"[STEP {step}] Agent Stats: {stats}")
-            except Exception as e:
-                print(f"[STEP {step}] Error in logging: {e}")
+            # Convert actions for environment step (suppress per-step logging)
+            a0_conv = convert_action(a0)
+            a1_conv = convert_action(a1)
 
             # Step env
             joint = (a0_conv, a1_conv)
@@ -445,30 +425,20 @@ def main():
         # UI - Enhanced with interpreter information
         info_lines = [
             f'Step: {step}',
-            'Controls: SPACE=pause, P=intervene, ESC=quit',
+            'Controls: p=pause, ESC=quit',
+            'When paused, type your intervention command and press Enter',
             f'Total Interventions: {len(p0.get_intervention_history())}',
-            f'Config: Memory={"ON" if enable_memory else "OFF"}',
         ]
 
-        # Teammate model/type
-        teammate_name = getattr(p1, 'agent_name', type(p1).__name__)
-        info_lines.append(f'Teammate: {teammate_name}')
-        
         # Add interpreter status information
         try:
             last_plan = getattr(p0, 'last_plan', None)  
             
-            if last_plan and last_plan.get('steps'):
-                steps_str = ', '.join(last_plan.get('steps', [])[:3])  # Show first 3 steps
-                if len(last_plan.get('steps', [])) > 3:
-                    steps_str += '...'
-                info_lines.append(f'Plan Steps: {steps_str}')
-            
-            # Show current ML action
-            current_ml = getattr(p0, 'current_ml_action', None)
-            if current_ml:
-                info_lines.append(f'Current ML Action: {current_ml}')
-                
+            # if last_plan and last_plan.get('steps'):
+            #     steps_str = ', '.join(last_plan.get('steps', [])[:3])  # Show first 3 steps
+            #     if len(last_plan.get('steps', [])) > 3:
+            #         steps_str += '...'
+            #     info_lines.append(f'Planned Steps: {steps_str}')
             
             # Show teammate model from memory module (LLM-authored) - only if memory is enabled
             if enable_memory:
@@ -493,7 +463,7 @@ def main():
             info_lines.append(f'Debug Error: {str(e)[:30]}...')
         
         if intervention_mode:
-            info_lines.append(f'Intervention: {intervention_text}_')
+            info_lines.append(f'Paused - Intervention: {intervention_text}_')
         else:
             # Recent intervention history is shown above
             pass

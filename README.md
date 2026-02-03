@@ -63,8 +63,6 @@ Common flags:
 - `--horizon` (default `200`)
 - random start is on by default; use `--fixed_start` to disable
 - `--no_cot`, `--no_memory`, `--ego_variant`
-- `--participant_id`, `--title_layout`, `--title_teammate`
-- `--log`, `--log_path`, `--log_dir`
 
 Examples:
 ```bash
@@ -123,8 +121,7 @@ Common flags:
 - `--no_cot`, `--no_memory`
 - `--teammate_style` (`aggressive|conservative|switching`, default `conservative`)
 - `--switch_prob` (only used when style is `switching`, default `0.5`)
-- `--participant_id`, `--title_layout`, `--title_teammate`, `--ego_variant`
-- `--log`, `--log_path`, `--log_dir`
+- `--ego_variant`
 
 Example:
 ```bash
@@ -150,3 +147,6 @@ Example interventions:
 - `"Avoid the crowded area to the left"`
 - `"Take a more direct path to the goal"`
 - `"Your teammate is at another meeting location"`
+
+## License
+This code is released under the Apache License 2.0.

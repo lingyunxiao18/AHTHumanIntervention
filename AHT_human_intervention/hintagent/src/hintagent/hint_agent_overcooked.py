@@ -74,6 +74,7 @@ def detect_environment_events(state, prev_state, stuck_counter, agent_index=0, m
             "pots_cooking": 0,
             "pots_partial": 0,
             "soups_on_counter": 0,
+            "deliveries": 0,
         }
         try:
             players = getattr(s, "players", [])
@@ -95,6 +96,11 @@ def detect_environment_events(state, prev_state, stuck_counter, agent_index=0, m
             sig["soups_on_counter"] = len(soups)
         except Exception:
             pass
+        try:
+            if hasattr(s, "num_delivered"):
+                sig["deliveries"] = int(s.num_delivered)
+        except Exception:
+            pass
         return sig
 
     def _task_progress_improved(prev_sig, curr_sig):
@@ -107,6 +113,8 @@ def detect_environment_events(state, prev_state, stuck_counter, agent_index=0, m
         if curr_sig.get("pots_partial", 0) > prev_sig.get("pots_partial", 0):
             return True
         if curr_sig.get("soups_on_counter", 0) > prev_sig.get("soups_on_counter", 0):
+            return True
+        if curr_sig.get("deliveries", 0) > prev_sig.get("deliveries", 0):
             return True
         if curr_sig.get("ego_holding") != prev_sig.get("ego_holding"):
             return True
@@ -158,6 +166,7 @@ class HINTAgent:
         self.agent_index = agent_index
         self.enable_cot = enable_cot
         self.enable_memory = enable_memory
+        self.verbose = False
         
         # OpenAI API key handling
         self.openai_api_keys = []
@@ -198,7 +207,8 @@ class HINTAgent:
         )
         cot_status = "ENABLED" if enable_cot else "DISABLED"
         mem_status = "ENABLED" if enable_memory else "DISABLED"
-        print(f"🤖 HINTAgent initialized (CoT: {cot_status}, Memory: {mem_status})")
+        if self.verbose:
+            print(f"🤖 HINTAgent initialized (CoT: {cot_status}, Memory: {mem_status})")
         
         # Human intervention tracking
         self._human_inbox: List[str] = []
@@ -355,7 +365,8 @@ class HINTAgent:
             )
         if events:
             psi_text += f" Events: {events}."
-            print(f"🔍 Including events in prompt: {events}")
+            if self.verbose:
+                print(f"🔍 Including events in prompt: {events}")
         
         # Get recent history with teammate actions
         recent_history = self._recent_history[-self.history_horizon:]
@@ -366,7 +377,8 @@ class HINTAgent:
         # Create human message
         hm = HumanMessage(t=getattr(state, "timestep", 0), text=human_text or "")
         if hm.text.strip():
-            print(f"[HUMAN] Consuming intervention at t={hm.t}: '{hm.text}'")
+            if self.verbose:
+                print(f"[HUMAN] Consuming intervention at t={hm.t}: '{hm.text}'")
             if self.enable_memory:
                 self._pending_intervention = {
                     "timestamp": hm.t,
@@ -412,7 +424,8 @@ class HINTAgent:
             
             # Check for low-level override (applies for 1 step, then continues with medium-level plan)
             if hasattr(plan, 'low_level_override') and plan.low_level_override:
-                print(f"🎯 Low-level override detected: {plan.low_level_override}")
+                if self.verbose:
+                    print(f"🎯 Low-level override detected: {plan.low_level_override}")
                 self.low_level_override = plan.low_level_override
                 self.low_level_override_duration = 1
                 # Track human intervention for card learning
@@ -426,8 +439,9 @@ class HINTAgent:
                 raise RuntimeError("Interpreter returned empty plan")
             ml_action = plan.steps[0]
             
-            print(f"🧠 Interpreter generated plan with {len(plan.steps)} steps")
-            print(f"📋 Current ml_action: {ml_action}")
+            if self.verbose:
+                print(f"🧠 Interpreter generated plan with {len(plan.steps)} steps")
+                print(f"📋 Current ml_action: {ml_action}")
             
             return ml_action
                 
@@ -775,12 +789,14 @@ class HINTAgent:
 
         # Check for low-level override first (before any other logic)
         if self.low_level_override and self.low_level_override_duration > 0:
-            print(f"🎯 Applying low-level override: {self.low_level_override}")
+            if self.verbose:
+                print(f"🎯 Applying low-level override: {self.low_level_override}")
             chosen_action = LOW_LEVEL_OVERRIDE_TO_ACTION.get(self.low_level_override, Action.STAY)
             self.low_level_override_duration -= 1
             if self.low_level_override_duration <= 0:
                 self.low_level_override = None
-                print(f"🔄 Low-level override completed")
+                if self.verbose:
+                    print(f"🔄 Low-level override completed")
         elif "wait" in self.current_ml_action:
             self.current_ml_action_steps += 1
             self.time_to_wait -= 1
@@ -838,6 +854,7 @@ class HINTAgent:
             "pots_cooking": 0,
             "pots_partial": 0,
             "soups_on_counter": 0,
+            "deliveries": 0,
         }
         try:
             players = getattr(state, "players", [])
@@ -859,6 +876,11 @@ class HINTAgent:
             sig["soups_on_counter"] = len(soups)
         except Exception:
             pass
+        try:
+            if hasattr(state, "num_delivered"):
+                sig["deliveries"] = int(state.num_delivered)
+        except Exception:
+            pass
         return sig
 
     def _progress_improved(self, baseline, current):
@@ -871,6 +893,8 @@ class HINTAgent:
         if current.get("pots_partial", 0) > baseline.get("pots_partial", 0):
             return True
         if current.get("soups_on_counter", 0) > baseline.get("soups_on_counter", 0):
+            return True
+        if current.get("deliveries", 0) > baseline.get("deliveries", 0):
             return True
         if current.get("ego_holding") != baseline.get("ego_holding"):
             return True
@@ -891,7 +915,8 @@ class HINTAgent:
 
             if saw_cyclic_start and steps_since <= self.cyclic_success_window:
                 if "cyclic_behavior" not in events:
-                    print(f"[INTERVENTION] success (cycle resolved) at t={t} for intervention {self._pending_intervention['timestamp']}")
+                    if self.verbose:
+                        print(f"[INTERVENTION] success (cycle resolved) at t={t} for intervention {self._pending_intervention['timestamp']}")
                     self.interpreter.commit_intervention_pattern(self._pending_intervention["timestamp"])
                     self._pending_intervention = None
                     return
@@ -899,14 +924,16 @@ class HINTAgent:
             baseline = self._pending_intervention.get("baseline_signature")
             current_sig = self._get_progress_signature(state)
             if steps_since <= self.lack_progress_success_window and self._progress_improved(baseline, current_sig):
-                print(f"[INTERVENTION] success (task progress) at t={t} for intervention {self._pending_intervention['timestamp']}")
+                if self.verbose:
+                    print(f"[INTERVENTION] success (task progress) at t={t} for intervention {self._pending_intervention['timestamp']}")
                 self.interpreter.commit_intervention_pattern(self._pending_intervention["timestamp"])
                 self._pending_intervention = None
                 return
 
             if steps_since >= self.lack_progress_success_window:
                 if not saw_cyclic_start or steps_since >= self.cyclic_success_window:
-                    print(f"[INTERVENTION] failure at t={t} for intervention {self._pending_intervention['timestamp']}")
+                    if self.verbose:
+                        print(f"[INTERVENTION] failure at t={t} for intervention {self._pending_intervention['timestamp']}")
                     self.interpreter.discard_intervention_pattern(self._pending_intervention["timestamp"])
                     self._pending_intervention = None
         except Exception:
@@ -1017,13 +1044,15 @@ class HINTAgent:
         if text and text.strip():
             self._human_inbox.append(text.strip())
             self._intervention_history.append(text.strip())
-            print(f"🎯 Human intervention received: '{text.strip()}'")
+            if self.verbose:
+                print(f"🎯 Human intervention received: '{text.strip()}'")
             # Note: State information will be captured when the intervention is processed in generate_ml_action
             
             # Immediately override current ML action to process intervention
             self.current_ml_action = None
             self.current_ml_action_steps = 0
-            print(f"🔄 Overriding current ML action to process intervention")
+            if self.verbose:
+                print(f"🔄 Overriding current ML action to process intervention")
 
     # Compatibility with demo harness API
     def process_human_intervention(self, text: str) -> bool:

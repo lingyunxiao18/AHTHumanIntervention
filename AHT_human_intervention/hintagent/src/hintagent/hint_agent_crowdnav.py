@@ -90,6 +90,7 @@ class HINTAgentCrowdNav:
         # Initialize interpreter-based planner
         self.enable_cot = enable_cot
         self.enable_memory = enable_memory
+        self.verbose = False
         self.memory = AgentMemory()
         self.history_horizon = history_horizon
         
@@ -134,7 +135,8 @@ class HINTAgentCrowdNav:
         
         cot_status = "ENABLED" if enable_cot else "DISABLED"
         mem_status = "ENABLED" if enable_memory else "DISABLED"
-        print(f"🤖 HINTAgentCrowdNav initialized (CoT: {cot_status}, Memory: {mem_status})")
+        if self.verbose:
+            print(f"🤖 HINTAgentCrowdNav initialized (CoT: {cot_status}, Memory: {mem_status})")
     
     # ==================== OpenAI Key Management ====================
     
@@ -295,7 +297,8 @@ class HINTAgentCrowdNav:
         human_message = None
         if self._human_inbox:
             human_message = self._human_inbox.pop(0)
-            print(f"🎯 Processing human intervention: '{human_message}'")
+            if self.verbose:
+                print(f"🎯 Processing human intervention: '{human_message}'")
             if human_message and self._pending_intervention is None:
                 self._pending_intervention = {
                     "timestamp": self.current_timestep,
@@ -324,7 +327,8 @@ class HINTAgentCrowdNav:
                 psi_text=psi_text
             )
         except Exception as e:
-            print(f"❌ Interpreter error: {e}")
+            if self.verbose:
+                print(f"❌ Interpreter error: {e}")
             import traceback
             traceback.print_exc()
             # Fallback: continue toward goal (action 0 = up)
@@ -506,7 +510,8 @@ class HINTAgentCrowdNav:
             if start_pos and cur_pos:
                 dist = float(np.hypot(cur_pos[0] - start_pos[0], cur_pos[1] - start_pos[1]))
                 if dist > self.cycle_dist_thresh:
-                    print(f"[INTERVENTION] success (cycle resolved) at t={self.current_timestep} for intervention {self._pending_intervention['timestamp']}")
+                    if self.verbose:
+                        print(f"[INTERVENTION] success (cycle resolved) at t={self.current_timestep} for intervention {self._pending_intervention['timestamp']}")
                     self.interpreter.commit_intervention_pattern(self._pending_intervention["timestamp"])
                     self._pending_intervention = None
                     return
@@ -516,14 +521,16 @@ class HINTAgentCrowdNav:
             curr_best = self._best_combined_distance(obs)
             if start_best is not None and curr_best is not None:
                 if (start_best - curr_best) >= self.success_progress_delta:
-                    print(f"[INTERVENTION] success (meeting progress) at t={self.current_timestep} for intervention {self._pending_intervention['timestamp']}")
+                    if self.verbose:
+                        print(f"[INTERVENTION] success (meeting progress) at t={self.current_timestep} for intervention {self._pending_intervention['timestamp']}")
                     self.interpreter.commit_intervention_pattern(self._pending_intervention["timestamp"])
                     self._pending_intervention = None
                     return
 
         if steps_since >= self.lack_progress_success_window:
             if not saw_cyclic_start or steps_since >= self.cyclic_success_window:
-                print(f"[INTERVENTION] failure at t={self.current_timestep} for intervention {self._pending_intervention['timestamp']}")
+                if self.verbose:
+                    print(f"[INTERVENTION] failure at t={self.current_timestep} for intervention {self._pending_intervention['timestamp']}")
                 self.interpreter.discard_intervention_pattern(self._pending_intervention["timestamp"])
                 self._pending_intervention = None
     
@@ -534,12 +541,14 @@ class HINTAgentCrowdNav:
         if text and text.strip():
             self._human_inbox.append(text.strip())
             self._intervention_history.append(text.strip())
-            print(f"🎯 Human intervention received: '{text.strip()}'")
+            if self.verbose:
+                print(f"🎯 Human intervention received: '{text.strip()}'")
             
             # Immediately override current waypoint action to process intervention
             self.current_waypoint_action = None
             self.current_waypoint_steps = 0
-            print(f"🔄 Overriding current waypoint action to process intervention")
+            if self.verbose:
+                print(f"🔄 Overriding current waypoint action to process intervention")
 
     def process_human_intervention(self, text: str) -> bool:
         """Compatibility with demo harness API"""

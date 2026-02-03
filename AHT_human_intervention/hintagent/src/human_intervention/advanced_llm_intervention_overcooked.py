@@ -160,7 +160,7 @@ class AgentMemory:
 		sem = self.semantic
 		return {
 			"summary": self.summarize_recent(),
-			"intervention_patterns": sem.get("intervention_patterns", [])[-4:],  # Keep last 4 entries
+			"intervention_patterns": sem.get("intervention_patterns", []),
 		}
 
 @dataclass
@@ -177,6 +177,7 @@ class LLMClient:
     def __init__(self, openai_client: Optional[OpenAI] = None, model: str = "gpt-5-mini"):
         self.client = openai_client or OpenAI()
         self.model = model
+        self.verbose = False
 
     def respond_json(self, schema: Dict[str, Any], system: str, user: Dict[str, Any], max_retries: int = 3) -> Dict[str, Any]:
         """
@@ -216,7 +217,8 @@ class LLMClient:
                 # Check if content is empty or None
                 if not raw or not raw.strip():
                     if attempt < max_retries - 1:
-                        print(f"⚠️ Empty response from LLM (attempt {attempt + 1}/{max_retries}), retrying...")
+                        if self.verbose:
+                            print(f"⚠️ Empty response from LLM (attempt {attempt + 1}/{max_retries}), retrying...")
                         import time
                         time.sleep(0.5 * (attempt + 1))  # Exponential backoff
                         continue
@@ -271,14 +273,16 @@ class LLMClient:
                     except Exception:
                         return _fallback(f"schema validation failed: {e.message}")
                 
-                print(f"Parsed: {parsed}")
+                if self.verbose:
+                    print(f"Parsed: {parsed}")
                 return parsed
                 
             except ValueError as e:
                 # If it's a ValueError (empty response or JSON parse error), retry if possible
                 last_error = e
                 if attempt < max_retries - 1 and "Empty response" in str(e):
-                    print(f"⚠️ Retrying due to error: {e}")
+                    if self.verbose:
+                        print(f"⚠️ Retrying due to error: {e}")
                     import time
                     time.sleep(0.5 * (attempt + 1))  # Exponential backoff
                     continue
@@ -415,13 +419,14 @@ class AdvancedLLMInterpreter:
 	- call LLM in JSON mode
 	- return Plan
 	"""
-	def __init__(self, llm: LLMClient, memory: AgentMemory, history_horizon: int = 8, 
+	def __init__(self, llm: LLMClient, memory: AgentMemory, history_horizon: int = 2, 
 	             enable_cot: bool = True, enable_memory: bool = True):
 		self.llm = llm
 		self.memory = memory
 		self.history_horizon = history_horizon
 		self.enable_cot = enable_cot
 		self.enable_memory = enable_memory
+		self.verbose = False
 		self._last_teammate_behavior = ""
 		self._pending_patterns: Dict[int, Dict[str, Any]] = {}
 	
@@ -501,7 +506,7 @@ class AdvancedLLMInterpreter:
 			return -1.0
 		return float(np.dot(a, b) / (na * nb))
 
-	def _select_icl_examples(self, state=None, events=None, k: int = 4, psi_text: Optional[str] = None) -> List[Dict[str, Any]]:
+	def _select_icl_examples(self, state=None, events=None, k: int = 3, psi_text: Optional[str] = None) -> List[Dict[str, Any]]:
 		"""Select a small set of ICL examples from intervention_patterns."""
 		patterns = [
 			p for p in self.memory.semantic.get("intervention_patterns", [])
@@ -544,8 +549,10 @@ class AdvancedLLMInterpreter:
 				"detected_failures": p.get("detected_failures", []),
 				"state_abstraction": p.get("psi_text", ""),
 				"outcome": p.get("outcome", "unknown"),
+				"teammate_behavior": p.get("teammate_behavior", ""),
+				"category": p.get("category", None),
 				# minimal raw info in case model wants concrete action
-				"action_taken": p.get("action_taken"),
+				"skill": p.get("skill"),
 				"low_level_override": p.get("low_level_override"),
 			})
 		return examples
@@ -561,7 +568,7 @@ class AdvancedLLMInterpreter:
 				"timestamp": human_msg.t,
 				"human_message": human_msg.text,
 				"detected_failures": events or [],
-				"action_taken": plan.steps[0] if plan.steps else None,
+				"skill": plan.steps[0] if plan.steps else None,
 				"low_level_override": plan.low_level_override,
 				"category": getattr(plan, "category", None),
 				"teammate_behavior": getattr(plan, "teammate_behavior", ""),
@@ -571,11 +578,13 @@ class AdvancedLLMInterpreter:
 			}
 			self._pending_patterns[human_msg.t] = pattern
 			
-			print(f"[ICL] Stored intervention pattern (t={human_msg.t}): {psi_snapshot[:60]}...")
+			if self.verbose:
+				print(f"[ICL] Stored intervention pattern (t={human_msg.t}): {psi_snapshot[:60]}...")
 			
 		except Exception as e:
 			# Be conservative: never crash the interpreter because of logging
-			print(f"[WARN] _store_intervention_pattern failed: {e}")
+			if self.verbose:
+				print(f"[WARN] _store_intervention_pattern failed: {e}")
 			return
 
 	def commit_intervention_pattern(self, timestamp: int) -> None:
@@ -584,7 +593,7 @@ class AdvancedLLMInterpreter:
 			return
 		pattern["outcome"] = "success"
 		self.memory.semantic.setdefault("intervention_patterns", []).append(pattern)
-		max_patterns = 32
+		max_patterns = 10
 		if len(self.memory.semantic["intervention_patterns"]) > max_patterns:
 			self.memory.semantic["intervention_patterns"] = \
 				self.memory.semantic["intervention_patterns"][-max_patterns:]
@@ -595,7 +604,7 @@ class AdvancedLLMInterpreter:
 			return
 		pattern["outcome"] = "failure"
 		self.memory.semantic.setdefault("intervention_patterns", []).append(pattern)
-		max_patterns = 15
+		max_patterns = 10
 		if len(self.memory.semantic["intervention_patterns"]) > max_patterns:
 			self.memory.semantic["intervention_patterns"] = \
 				self.memory.semantic["intervention_patterns"][-max_patterns:]
@@ -649,12 +658,18 @@ class AdvancedLLMInterpreter:
 			user_payload["icl_examples"] = icl_examples
 			
 			# Debug: print ICL examples being used
-			if icl_examples:
+			if icl_examples and self.verbose:
 				print(f"[ICL] Using {len(icl_examples)} examples:")
 				for i, ex in enumerate(icl_examples):
 					state_abstraction = ex.get("state_abstraction", "")
 					events_str = ", ".join(ex.get("detected_failures", []))
-					print(f"  [{i+1}] t={ex.get('timestamp')} events=[{events_str}] state_abstraction={state_abstraction}")
+					teammate_behavior = ex.get("teammate_behavior", "")
+					category = ex.get("category", None)
+					print(
+						f"  [{i+1}] t={ex.get('timestamp')} events=[{events_str}] "
+						f"category={category} state_abstraction={state_abstraction} "
+						f"teammate_behavior={teammate_behavior}"
+					)
 
 		# Get system rules based on enabled features
 		system_rules = _get_system_rules(enable_cot=self.enable_cot, enable_memory=self.enable_memory)

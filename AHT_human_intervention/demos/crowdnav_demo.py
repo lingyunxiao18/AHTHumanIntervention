@@ -366,7 +366,6 @@ def main():
                         help='Background agents near meeting location 2 (default: 2)')
     parser.add_argument('--fixed_start', action='store_true',
                         help='Use fixed starting positions (random by default)')
-    parser.add_argument('--participant_id', type=str, default='P000')
     parser.add_argument('--ego_variant', type=str, default='HINT',
                         help='Ego variant label (ProAgent, YAY, CoT, HINT)')
     parser.add_argument('--title_layout', type=str, default='cooperative_reaching',
@@ -447,7 +446,7 @@ def main():
     # Setup matplotlib figure with two subplots: visualization and text
     fig = plt.figure(figsize=(16, 9))
     fig.suptitle(
-        f"CrowdNav | participant={args.participant_id} | ego={args.ego_variant} | layout={args.title_layout} | teammate={args.title_teammate}",
+        f"CrowdNav | ego={args.ego_variant} | layout={args.title_layout} | teammate={args.title_teammate}",
         fontsize=12,
     )
     
@@ -552,7 +551,7 @@ def main():
             text_display.update_status(status_message, 'blue')
             fig.canvas.draw()
         elif event.key == 'm':
-            # Memory details hidden for user study
+            # Memory details hidden
             status_message = "Memory hidden"
             text_display.update_status(status_message, 'purple')
             fig.canvas.draw()
@@ -617,7 +616,7 @@ def main():
                 reasoning_visible = False
             action = p0.action(obs)
 
-            # Hide step details (CoT, memory, agent identity) for user study
+            # Hide step details (CoT, memory, agent identity)
             text_display.set_current_step([])
 
             # Step env

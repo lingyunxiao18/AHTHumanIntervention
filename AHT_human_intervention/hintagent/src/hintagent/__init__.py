@@ -1,5 +1,5 @@
 """
-HINT-Agent: Human-INtervention-enhanced Agent
+HINT-Agent
 """
 
 from .hint_agent_overcooked import HINTAgent

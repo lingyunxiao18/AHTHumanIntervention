@@ -101,7 +101,7 @@ class AgentMemory:
 		sem = self.semantic
 		return {
 			"summary": self.summarize_recent(),
-			"intervention_patterns": sem.get("intervention_patterns", [])[-4:],  # Keep last 4 entries
+			"intervention_patterns": sem.get("intervention_patterns", []),
 		}
 
 
@@ -179,6 +179,7 @@ class LLMClient:
     def __init__(self, openai_client: Optional[OpenAI] = None, model: str = "gpt-5-mini"):
         self.client = openai_client or OpenAI()
         self.model = model
+        self.verbose = False
 
     def respond_json(self, schema: Dict[str, Any], system: str, user: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -218,9 +219,11 @@ class LLMClient:
             if not text_out or not text_out.strip():
                 finish_reason = getattr(response.choices[0], "finish_reason", None) if response.choices else None
                 if finish_reason == "length":
-                    print(f"[LLM-WARNING] Response hit token limit ({response.usage.completion_tokens if hasattr(response, 'usage') else 'unknown'} tokens), using fallback")
+                    if self.verbose:
+                        print(f"[LLM-WARNING] Response hit token limit ({response.usage.completion_tokens if hasattr(response, 'usage') else 'unknown'} tokens), using fallback")
                 else:
-                    print(f"[LLM-WARNING] Empty response (finish_reason: {finish_reason}), using fallback")
+                    if self.verbose:
+                        print(f"[LLM-WARNING] Empty response (finish_reason: {finish_reason}), using fallback")
                 # Return fallback plan
                 obj = {
                     "steps": [0],
@@ -240,16 +243,17 @@ class LLMClient:
                     obj, err = _extract_first_json_object(text_out)
                     if obj is None:
                         if "Unterminated string" in str(e) or "No JSON object found" in str(err):
-                            print(f"[LLM-WARNING] Response appears truncated, using fallback")
-                            obj = {
-                                "steps": [0],
-                                "chain_of_thought": "Response was truncated, using safe fallback",
-                                "category": "general_hint",
-                                "teammate_behavior": "",
-                                "low_level_override": None,
-                            }
-                        else:
-                            raise ValueError(f"Could not parse JSON: {err}\nRaw: {text_out}")
+                            if self.verbose:
+                                print(f"[LLM-WARNING] Response appears truncated, using fallback")
+                                obj = {
+                                    "steps": [0],
+                                    "chain_of_thought": "Response was truncated, using safe fallback",
+                                    "category": "general_hint",
+                                    "teammate_behavior": "",
+                                    "low_level_override": None,
+                                }
+                            else:
+                                raise ValueError(f"Could not parse JSON: {err}\nRaw: {text_out}")
             
             
             # Remove any properties not in the schema
@@ -349,7 +353,7 @@ def _get_system_rules(enable_cot: bool = True, enable_memory: bool = True) -> st
 		with open(rules_file, 'r', encoding='utf-8') as f:
 			base_rules = f.read()
 	except Exception as e:
-		print(f"[WARNING] Could not load system rules: {e}")
+		# Keep stdout quiet
 		base_rules = "You are a navigation assistant for a robot in a crowd."
 
 	if enable_cot and enable_memory:
@@ -378,13 +382,14 @@ class AdvancedLLMInterpreter:
 	Uses LLM to generate structured plans from text observations and human messages.
 	"""
 	
-	def __init__(self, llm_client: LLMClient, memory: AgentMemory, history_horizon: int = 6,
+	def __init__(self, llm_client: LLMClient, memory: AgentMemory, history_horizon: int = 2,
 	             enable_cot: bool = True, enable_memory: bool = True):
 		self.llm = llm_client
 		self.memory = memory
 		self.history_horizon = history_horizon
 		self.enable_cot = enable_cot
 		self.enable_memory = enable_memory
+		self.verbose = False
 		self._last_teammate_behavior = ""
 		self._pending_patterns: Dict[int, Dict[str, Any]] = {}
 		self.system_rules = _get_system_rules(enable_cot=enable_cot, enable_memory=enable_memory)
@@ -415,7 +420,7 @@ class AdvancedLLMInterpreter:
 			return -1.0
 		return float(np.dot(a, b) / (na * nb))
 
-	def _select_icl_examples(self, state_prompt: str, events=None, k: int = 4, psi_text: Optional[str] = None) -> List[Dict[str, Any]]:
+	def _select_icl_examples(self, state_prompt: str, events=None, k: int = 3, psi_text: Optional[str] = None) -> List[Dict[str, Any]]:
 		"""Select a small set of ICL examples from intervention_patterns."""
 		patterns = [
 			p for p in self.memory.semantic.get("intervention_patterns", [])
@@ -453,7 +458,9 @@ class AdvancedLLMInterpreter:
 				"detected_failures": p.get("detected_failures", []),
 				"state_abstraction": p.get("psi_text", ""),
 				"outcome": p.get("outcome", "unknown"),
-				"action_taken": p.get("action_taken"),
+				"teammate_behavior": p.get("teammate_behavior", ""),
+				"category": p.get("category", None),
+				"skill": p.get("skill"),
 				"low_level_override": p.get("low_level_override"),
 			})
 		return examples
@@ -468,7 +475,7 @@ class AdvancedLLMInterpreter:
 				"timestamp": t,
 				"human_message": human_message,
 				"detected_failures": events or [],
-				"action_taken": plan.steps[0] if plan.steps else None,
+				"skill": plan.steps[0] if plan.steps else None,
 				"low_level_override": plan.low_level_override,
 				"category": getattr(plan, "category", None),
 				"teammate_behavior": getattr(plan, "teammate_behavior", ""),
@@ -486,8 +493,8 @@ class AdvancedLLMInterpreter:
 			return
 		pattern["outcome"] = "success"
 		self.memory.semantic.setdefault("intervention_patterns", []).append(pattern)
-		if len(self.memory.semantic["intervention_patterns"]) > 32:
-			self.memory.semantic["intervention_patterns"] = self.memory.semantic["intervention_patterns"][-32:]
+		if len(self.memory.semantic["intervention_patterns"]) > 10:
+			self.memory.semantic["intervention_patterns"] = self.memory.semantic["intervention_patterns"][-10:]
 
 	def discard_intervention_pattern(self, timestamp: int) -> None:
 		pattern = self._pending_patterns.pop(timestamp, None)
@@ -495,8 +502,8 @@ class AdvancedLLMInterpreter:
 			return
 		pattern["outcome"] = "failure"
 		self.memory.semantic.setdefault("intervention_patterns", []).append(pattern)
-		if len(self.memory.semantic["intervention_patterns"]) > 32:
-			self.memory.semantic["intervention_patterns"] = self.memory.semantic["intervention_patterns"][-32:]
+		if len(self.memory.semantic["intervention_patterns"]) > 10:
+			self.memory.semantic["intervention_patterns"] = self.memory.semantic["intervention_patterns"][-10:]
 
 	def interpret(
 		self,
@@ -547,12 +554,13 @@ class AdvancedLLMInterpreter:
 		try:
 			raw_plan = self.llm.respond_json(PLAN_JSON_SCHEMA, self.system_rules, user_prompt)
 			try:
-				print(f"[LLM] Raw plan: {json.dumps(raw_plan, ensure_ascii=True)}")
-				if self.enable_cot:
-					print(f"[COT] {raw_plan.get('chain_of_thought', '')}")
-				low_level_override = raw_plan.get("low_level_override")
-				if low_level_override is not None:
-					print(f"[LLM] Low-level override: {low_level_override}")
+				if self.verbose:
+					print(f"[LLM] Raw plan: {json.dumps(raw_plan, ensure_ascii=True)}")
+					if self.enable_cot:
+						print(f"[COT] {raw_plan.get('chain_of_thought', '')}")
+					low_level_override = raw_plan.get("low_level_override")
+					if low_level_override is not None:
+						print(f"[LLM] Low-level override: {low_level_override}")
 			except Exception:
 				pass
 		except Exception:
