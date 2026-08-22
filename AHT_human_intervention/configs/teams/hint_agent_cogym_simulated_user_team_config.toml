@@ -1,0 +1,12 @@
+# Legacy CoGym simulated_user teammate (can critique via chat).
+# Prefer hint_agent_cogym_supervisor_team_config.toml + peer personas for the paper arc.
+
+[[team_member]]
+name = "hint_agent"
+type = "agent"
+start_node_base_command = "python \"${HINT_AGENT_LAUNCHER:-../../AHT_human_intervention/hintagent/src/hintagent/hint_agent_cogym_launcher.py}\" --model-name gpt-5-mini --wait-time 1"
+
+[[team_member]]
+name = "user"
+type = "simulated_user"
+start_node_base_command = "python -m collaborative_gym.command start-simulated-user-node --proactive-action"

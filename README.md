@@ -148,5 +148,109 @@ Example interventions:
 - `"Take a more direct path to the goal"`
 - `"Your teammate is at another meeting location"`
 
+---
+
+# Collaborative Gym (Co-Gym) — AHT × HINT paper arc
+
+HINT-Agent is the **ego** under ad hoc teamwork: the **peer teammate** type is unknown a priori, and an **outside supervisor** may inject sparse free-text guidance (CoT + Memory). Teammates take **task actions only** (no critique chat). CoGym's native `simulated_user` remains available as a **legacy** baseline.
+
+## Paper roles
+
+| Role | Who | Behavior |
+|---|---|---|
+| Ego | `HINTAgentCoGym` | Plans with CoT+Memory; does not know teammate type |
+| Teammate | `PeerTeammateAgent` persona | `idle` / `complementary_searcher` / `greedy_editor` / `follower` — actions only |
+| Outside supervisor | Redis CLI or oracle | Complementary prefs/constraints; applied on next `get_action` (no pause) |
+
+## Prerequisites
+
+- macOS or Linux, Conda Python 3.11, Redis (`conda install -c conda-forge redis-server` or Docker), OpenAI API key
+- Vendored clone: `third_party/collaborative-gym/`
+- TravelPlanner DB unzipped under `third_party/collaborative-gym/datasets/TravelPlanner/database/` (see that folder's README)
+- `pip install -r third_party/collaborative-gym/requirements.txt` in env `cogym`
+- Secrets in `third_party/collaborative-gym/secrets.example.toml` or `secrets.toml` (**do not commit real keys**)
+
+## Demo (default: peer teammate + human CLI supervisor)
+
+```bash
+conda activate cogym
+# Redis: redis-server --daemonize yes   # or docker redis-stack
+python -m AHT_human_intervention.demos.hint_agent_cogym_demo \
+  --task travel_planning --idx 0 --model gpt-5-mini \
+  --teammate-persona complementary_searcher \
+  --supervisor-mode human_cli
+```
+
+In a second terminal:
+
+```bash
+python AHT_human_intervention/hintagent/src/hintagent/supervisor_cli.py \
+  --env-uuid env_<printed_uuid> --redis-url redis://localhost:6379/0
+```
+
+### Supervisor modes
+
+```bash
+--supervisor-mode off          # no-intervention baseline
+--supervisor-mode oracle       # scripted hints from TravelPlanner hidden prefs (--max-interventions K)
+--supervisor-mode human_cli    # you type interventions (default)
+```
+
+### Teammate personas
+
+```bash
+--teammate-persona idle
+--teammate-persona complementary_searcher   # default
+--teammate-persona greedy_editor
+--teammate-persona follower
+--teammate-persona legacy_simulated_user    # CoGym critic-user (legacy)
+```
+
+### Cross-episode memory
+
+```bash
+python -m AHT_human_intervention.demos.hint_agent_cogym_demo \
+  --supervisor-mode oracle --memory-path /tmp/hint_patterns.json ...
+```
+
+Patterns load at ego start and merge-save on `end()`.
+
+### Ablation / sweep harness
+
+```bash
+python -m AHT_human_intervention.demos.run_cogym_aht_sweep \
+  --personas idle,complementary_searcher,greedy_editor,follower \
+  --idxs 0 \
+  --conditions no_intervention,oracle_no_memory,oracle_with_memory \
+  --sweep-tag pilot
+```
+
+Writes `AHT_human_intervention/run_logs/cogym/sweeps/<tag>/summary.csv` and `summary.json`
+(performance_rating, interventions, event histogram, hint-before-editor, etc.).
+
+## Key files
+
+| File | Role |
+|---|---|
+| `hintagent/src/hintagent/hint_agent_cogym.py` | Ego + supervisor inbox + `--memory-path` |
+| `hintagent/src/hintagent/teammates/peer_personas.py` | Action-only personas |
+| `hintagent/src/hintagent/teammates/peer_teammate_launcher.py` | Peer AgentNode launcher |
+| `hintagent/src/hintagent/oracle_supervisor.py` | Scripted outside supervisor |
+| `hintagent/src/hintagent/supervisor_cli.py` | Human CLI |
+| `configs/teams/hint_agent_cogym_supervisor_team_config.toml` | Default: ego + peer agent |
+| `configs/teams/hint_agent_cogym_simulated_user_team_config.toml` | Legacy simulated_user |
+| `demos/hint_agent_cogym_demo.py` | Session orchestrator |
+| `demos/run_cogym_aht_sweep.py` | Persona × condition sweep |
+
+## Architecture map
+
+| HINT module | Co-Gym mapping |
+|---|---|
+| Planner (CoT + Memory) | One full action string |
+| Verifier | Regex `fullmatch` + retry → `WAIT_TEAMMATE_CONTINUE()` |
+| Events | `lack_of_progress`, `repeated_action`, `stalled_teammate`, `supervisor_intervention` |
+| Human channel | Redis outside-supervisor inbox (not teammate chat) |
+| Memory | `intervention_patterns` (+ optional cross-episode `--memory-path`) |
+
 ## License
 This code is released under the Apache License 2.0.

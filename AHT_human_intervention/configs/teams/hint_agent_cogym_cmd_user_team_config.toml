@@ -1,0 +1,15 @@
+# HINT-Agent × Real human (command-line) team config for Collaborative Gym.
+#
+# You intervene in real time by typing chat messages / task actions in the terminal
+# when the cmd_user node prompts you. HINT-Agent treats new user chat as
+# HumanMessage interventions (same CoT+Memory loop as Overcooked/CrowdNav).
+
+[[team_member]]
+name = "hint_agent"
+type = "agent"
+start_node_base_command = "python \"${HINT_AGENT_LAUNCHER:-../../AHT_human_intervention/hintagent/src/hintagent/hint_agent_cogym_launcher.py}\" --model-name gpt-5-mini --wait-time 1 --enhance-user-control"
+
+[[team_member]]
+name = "user"
+type = "cmd_user"
+start_node_base_command = "python -m collaborative_gym.command start-cmd-user-node"

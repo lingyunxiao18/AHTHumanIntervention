@@ -1,0 +1,13 @@
+# Secrets (API keys) — do not commit
+secrets.toml
+secrets.example.toml
+**/secrets.toml
+third_party/collaborative-gym/secrets.toml
+third_party/collaborative-gym/secrets.example.toml
+
+# Local / generated
+.DS_Store
+__pycache__/
+*.pyc
+AHT_human_intervention/run_logs/
+*.log

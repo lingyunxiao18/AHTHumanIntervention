@@ -1,0 +1,15 @@
+# HINT-Agent (ego) × action-only peer teammate × Outside human supervisor.
+#
+# Default paper setting: teammate is a PeerTeammateAgent (no critique chat).
+# Override persona via demo --teammate-persona or by editing --persona below.
+# Legacy CoGym simulated_user configs remain for comparison only.
+
+[[team_member]]
+name = "hint_agent"
+type = "agent"
+start_node_base_command = "python \"${HINT_AGENT_LAUNCHER:-../../AHT_human_intervention/hintagent/src/hintagent/hint_agent_cogym_launcher.py}\" --model-name gpt-5-mini --wait-time 1"
+
+[[team_member]]
+name = "teammate"
+type = "agent"
+start_node_base_command = "python \"${PEER_TEAMMATE_LAUNCHER:-../../AHT_human_intervention/hintagent/src/hintagent/teammates/peer_teammate_launcher.py}\" --persona complementary_searcher --wait-time 1"
